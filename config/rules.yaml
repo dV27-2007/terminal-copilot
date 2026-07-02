@@ -1,0 +1,46 @@
+known_command_prefixes:
+  - git
+  - docker
+  - docker compose
+  - pytest
+  - python
+  - pip
+  - npm
+  - pnpm
+  - yarn
+  - celery
+  - psql
+  - clickhouse-client
+  - make
+  - ssh
+  - scp
+  - kubectl
+  - systemctl
+  - journalctl
+  - vim
+  - nano
+  - code
+
+typos:
+  dokcer: docker
+  dcoker: docker
+  gti: git
+  pytes: pytest
+  pythno: python
+  celrey: celery
+
+dangerous_patterns:
+  - "rm -rf /"
+  - "rm -rf *"
+  - "sudo rm -rf"
+  - "docker volume prune"
+  - "docker system prune -a"
+  - "DROP DATABASE"
+  - "DROP TABLE"
+  - "TRUNCATE TABLE"
+  - "chmod -R 777 /"
+  - "chown -R"
+  - "mkfs"
+  - "dd if="
+  - "shutdown"
+  - "reboot"

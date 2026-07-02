@@ -1,0 +1,28 @@
+daemon:
+  host: "127.0.0.1"
+  port: 8765
+  socket_path: "~/.cache/term-copilot/daemon.sock"
+  db_path: "~/.local/share/term-copilot/history.sqlite3"
+  debounce_ms: 300
+  max_response_ms: 1200
+
+prediction:
+  min_buffer_length: 2
+  local_confidence_threshold: 0.80
+  cache_confidence_threshold: 0.75
+  ai_confidence_threshold: 0.70
+  max_candidates: 20
+
+ai:
+  enabled: false
+  provider: "gemini"
+  timeout_ms: 1500
+  max_input_chars: 2000
+  max_recent_commands: 10
+
+security:
+  redact_secrets: true
+  block_dangerous_ai_suggestions: true
+
+ui:
+  accept_key: "right_arrow"
