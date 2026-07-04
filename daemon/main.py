@@ -64,6 +64,26 @@ def record(args: argparse.Namespace) -> int:
     return 0
 
 
+def event(args: argparse.Namespace) -> int:
+    settings = load_settings(args.config_dir)
+    predictor = Predictor(settings=settings)
+    if args.event == "command_executed":
+        if not args.command:
+            print("command_executed requires --command", file=sys.stderr)
+            return 2
+        predictor.record_command(args.command, cwd=args.cwd or os.getcwd(), exit_code=args.exit_code, duration_ms=args.duration_ms, shell=args.shell)
+        return 0
+    if args.event in {"suggestion_accepted", "suggestion_ignored"}:
+        suggestion = args.suggestion or args.command
+        if not suggestion:
+            print(f"{args.event} requires --suggestion", file=sys.stderr)
+            return 2
+        predictor.mark_suggestion(suggestion, accepted=args.event == "suggestion_accepted")
+        return 0
+    print(f"unknown event: {args.event}", file=sys.stderr)
+    return 2
+
+
 def install(args: argparse.Namespace) -> int:
     project_root = Path(__file__).resolve().parents[1]
     shell_file = project_root / "zsh" / "terminal-copilot.zsh"
@@ -116,6 +136,16 @@ def main(argv: list[str] | None = None) -> int:
     p_record.add_argument("--exit-code", type=int, default=None)
     p_record.add_argument("--duration-ms", type=int, default=None)
     p_record.set_defaults(func=record)
+
+    p_event = sub.add_parser("event")
+    p_event.add_argument("event", choices=["command_executed", "suggestion_accepted", "suggestion_ignored"])
+    p_event.add_argument("--command", default=None)
+    p_event.add_argument("--suggestion", default=None)
+    p_event.add_argument("--cwd", default=None)
+    p_event.add_argument("--shell", default="zsh")
+    p_event.add_argument("--exit-code", type=int, default=None)
+    p_event.add_argument("--duration-ms", type=int, default=None)
+    p_event.set_defaults(func=event)
 
     p_install = sub.add_parser("install")
     p_install.add_argument("--root", action="store_true")

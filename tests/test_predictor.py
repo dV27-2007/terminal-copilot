@@ -2,8 +2,9 @@ from pathlib import Path
 
 from daemon.cache_store import CacheStore
 from daemon.config import Settings
+from daemon.context_detector import build_context
 from daemon.history_store import HistoryStore
-from daemon.models import PredictRequest
+from daemon.models import PredictRequest, Suggestion
 from daemon.predictor import Predictor
 from daemon.project_detector import clear_project_cache
 
@@ -83,6 +84,76 @@ def test_secret_looking_buffers_return_empty(tmp_path: Path):
         assert suggestion.ghost_text == ""
         assert suggestion.full_command == ""
     assert predictor.history.count_commands() == 0
+
+
+def test_cache_hit_can_return_prediction_when_no_history_exists(tmp_path: Path):
+    predictor = make_predictor(tmp_path)
+    request = PredictRequest(buffer="docker co", cwd=str(tmp_path), shell="zsh")
+    context = build_context(request, predictor.settings, predictor.history)
+    predictor.cache.save(context, Suggestion("mpose logs -f backend", "docker compose logs -f backend", "project_context", 0.95, "safe"))
+
+    suggestion = predictor.predict(request)
+
+    assert suggestion.full_command == "docker compose logs -f backend"
+    assert suggestion.source == "cache"
+
+
+def test_prediction_caches_safe_local_suggestion(tmp_path: Path):
+    predictor = make_predictor(tmp_path)
+    predictor.record_command("docker compose ps", cwd=str(tmp_path), exit_code=0, duration_ms=100)
+
+    suggestion = predictor.predict(PredictRequest(buffer="docker co", cwd=str(tmp_path), shell="zsh"))
+
+    assert suggestion.full_command == "docker compose ps"
+    assert predictor.cache.get_entry("docker compose ps") is not None
+
+
+def test_accepted_suggestion_ranks_higher_in_similar_context(tmp_path: Path):
+    predictor = make_predictor(tmp_path)
+    predictor.record_command("docker compose ps", cwd=str(tmp_path), exit_code=0, duration_ms=100)
+    predictor.record_command("docker compose logs -f backend", cwd=str(tmp_path), exit_code=0, duration_ms=100)
+
+    for _ in range(4):
+        predictor.mark_suggestion("docker compose ps", accepted=True)
+    suggestion = predictor.predict(PredictRequest(buffer="docker compose", cwd=str(tmp_path), shell="zsh"))
+
+    assert suggestion.full_command == "docker compose ps"
+
+
+def test_ignored_suggestion_ranks_lower_in_same_prefix_context(tmp_path: Path):
+    predictor = make_predictor(tmp_path)
+    predictor.record_command("docker compose ps", cwd=str(tmp_path), exit_code=0, duration_ms=100)
+    predictor.record_command("docker compose logs -f backend", cwd=str(tmp_path), exit_code=0, duration_ms=100)
+
+    for _ in range(8):
+        predictor.mark_suggestion("docker compose logs -f backend", accepted=False)
+    suggestion = predictor.predict(PredictRequest(buffer="docker compose", cwd=str(tmp_path), shell="zsh"))
+
+    assert suggestion.full_command == "docker compose ps"
+
+
+def test_recently_failed_command_ranks_lower_in_prediction(tmp_path: Path):
+    predictor = make_predictor(tmp_path)
+    predictor.record_command("pytest tests/ -q", cwd=str(tmp_path), exit_code=0, duration_ms=100)
+    for _ in range(4):
+        predictor.record_command("pytest tests/unit -q", cwd=str(tmp_path), exit_code=2, duration_ms=100)
+
+    suggestion = predictor.predict(PredictRequest(buffer="pytest tests", cwd=str(tmp_path), shell="zsh"))
+
+    assert suggestion.full_command == "pytest tests/ -q"
+
+
+def test_cache_suggestion_does_not_beat_strong_same_context_history_without_signal(tmp_path: Path):
+    predictor = make_predictor(tmp_path)
+    for _ in range(5):
+        predictor.record_command("docker compose ps", cwd=str(tmp_path), exit_code=0, duration_ms=100)
+    request = PredictRequest(buffer="docker co", cwd=str(tmp_path), shell="zsh")
+    context = build_context(request, predictor.settings, predictor.history)
+    predictor.cache.save(context, Suggestion("mpose logs -f backend", "docker compose logs -f backend", "project_context", 0.99, "safe"))
+
+    suggestion = predictor.predict(request)
+
+    assert suggestion.full_command == "docker compose ps"
 
 
 def test_cursor_buffer_is_clamped_and_ghost_text_is_suffix_only(tmp_path: Path):

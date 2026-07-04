@@ -104,6 +104,43 @@ Retention is explicit through `cleanup_retention()`. It removes old failed
 one-off commands first, then caps total stored commands while preferring to keep
 accepted, successful, and frequently used commands.
 
+## Suggestion Cache
+
+`daemon/cache_store.py` owns the local `suggestions_cache` table in the same
+SQLite database. Cache entries are local-only and store only suggestions that
+already passed validation:
+
+- the current buffer and full command must not look secret-like;
+- the cached command must be a valid continuation of the buffer;
+- the cached command must classify as `safe`;
+- dangerous or caution-risk suggestions are not cached.
+
+The cache key is split into an input hash and a context hash. The input hash is
+based on the normalized current buffer. The context hash includes the project
+root when present, otherwise cwd, plus git branch, shell, root mode, project
+type metadata, and the project marker hash. This keeps cached suggestions scoped
+to the project shape that produced them without storing large project data in
+the key.
+
+Cache entries have a bounded TTL, currently 14 days by default. Lookups ignore
+expired rows and still re-check continuation, secret detection, and safety
+before returning cache candidates.
+
+Pruning removes:
+
+- expired entries;
+- entries ignored too many times with no accepted signal;
+- old low-value entries with no accepted/success signal;
+- excess entries over the cache cap, preferring to keep accepted, successful,
+  and repeatedly used suggestions.
+
+Accepted and ignored events update both command history and any matching cached
+suggestion. Command execution updates history success/failure counts and also
+marks matching cache rows with used/success/fail counters. The current zsh
+adapter emits accepted and command-executed events, but it does not yet emit a
+reliable ignored event; the daemon/store side supports `suggestion_ignored` for
+future adapter wiring and manual CLI testing.
+
 ## Prediction Pipeline
 
 Prediction is local-first and quiet by default. `daemon/predictor.py` now applies
@@ -115,8 +152,18 @@ cheap gates before building project/git context:
 4. Build local context only after those checks pass.
 5. Collect history candidates and lightweight project-context candidates.
 6. Rank and safety-filter candidates.
-7. Return ghost text only when the full command validly continues the current
+7. Return strong local history/project candidates immediately and cache safe
+   returned suggestions.
+8. If no strong local candidate exists, add non-expired cache candidates to the
+   same ranking path.
+9. Return ghost text only when the full command validly continues the current
    buffer.
+
+Cache candidates use the same deterministic scoring path as history and project
+candidates. A cache hit cannot bypass continuation, secret, TTL, or safety
+checks. Cache candidates use a stricter confidence threshold than weak local
+fallbacks, and strong same-context successful history is considered before cache
+lookup.
 
 `daemon/context_detector.py` treats input as command-like when the first token is
 on `PATH`, is a known local tool, is present in command history, is a close known

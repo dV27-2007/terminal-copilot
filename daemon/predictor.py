@@ -52,24 +52,30 @@ class Predictor:
             candidate, score = ranked[0]
             confidence = score_to_confidence(score)
             if confidence >= self.settings.prediction.local_confidence_threshold:
-                return self._to_suggestion(context, candidate.full_command, candidate.source, confidence)
+                suggestion = self._to_suggestion(context, candidate.full_command, candidate.source, confidence)
+                if self._valid_suggestion(context, suggestion, source=candidate.source):
+                    self.cache.save(context, suggestion)
+                    return suggestion
 
-        cached = self.cache.lookup(context)
-        if cached and cached.confidence >= self.settings.prediction.cache_confidence_threshold:
-            if self._valid_suggestion(context, cached, source=cached.source):
-                return cached
+        cache_candidates = self.cache.lookup_candidates(context, limit=self.settings.prediction.max_candidates)
+        combined = self._dedupe(local + cache_candidates)
+        ranked = rank_candidates(combined, context, self.safety, limit=self.settings.prediction.max_candidates)
+        if ranked:
+            for candidate, score in ranked:
+                confidence = score_to_confidence(score)
+                threshold = self.settings.prediction.cache_confidence_threshold if candidate.source == "cache" else 0.45
+                if confidence >= threshold:
+                    suggestion = self._to_suggestion(context, candidate.full_command, candidate.source, confidence)
+                    if self._valid_suggestion(context, suggestion, source=candidate.source):
+                        if candidate.source != "cache":
+                            self.cache.save(context, suggestion)
+                        return suggestion
 
         if self._should_call_ai(context, ranked):
             ai_suggestion = self.ai_client.complete(context)
             if self._valid_suggestion(context, ai_suggestion, source="ai") and ai_suggestion.confidence >= self.settings.prediction.ai_confidence_threshold:
                 self.cache.save(context, ai_suggestion)
                 return ai_suggestion
-
-        if ranked:
-            candidate, score = ranked[0]
-            confidence = score_to_confidence(score)
-            if confidence >= 0.45:
-                return self._to_suggestion(context, candidate.full_command, candidate.source, confidence)
 
         return empty_suggestion("no confident suggestion")
 
@@ -176,6 +182,7 @@ class Predictor:
             exit_code=exit_code,
             duration_ms=duration_ms,
         )
+        self.cache.mark_execution(command, exit_code=exit_code)
 
     def mark_suggestion(self, full_command: str, *, accepted: bool) -> None:
         self.history.mark_suggestion(full_command, accepted=accepted)
