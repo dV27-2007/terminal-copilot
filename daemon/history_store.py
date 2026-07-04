@@ -100,6 +100,21 @@ class HistoryStore:
         with self._lock, self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0])
 
+    def has_first_token(self, token: str) -> bool:
+        normalized = normalize_command(token)
+        if not normalized or " " in normalized:
+            return False
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM commands
+                WHERE normalized_command = ? OR normalized_command LIKE ?
+                LIMIT 1
+                """,
+                (normalized, normalized + " %"),
+            ).fetchone()
+        return row is not None
+
     def get_command(
         self,
         command: str,

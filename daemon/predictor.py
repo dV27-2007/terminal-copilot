@@ -36,11 +36,15 @@ class Predictor:
         self.ai_client = ai_client or AIClient(enabled=self.settings.ai.enabled)
 
     def predict(self, request: PredictRequest) -> Suggestion:
-        context = build_context(request, self.settings, self.history)
-        if contains_secret(context.buffer):
+        cursor = request.cursor if request.cursor is not None else len(request.buffer)
+        cursor = max(0, min(cursor, len(request.buffer)))
+        buffer = request.buffer[:cursor]
+        if contains_secret(buffer):
             return empty_suggestion("buffer contains secret")
-        if not is_command_like(context.buffer, self.settings, self.history):
+        if not is_command_like(buffer, self.settings, self.history):
             return empty_suggestion("not command-like")
+
+        context = build_context(request, self.settings, self.history)
 
         local = self._local_candidates(context)
         ranked = rank_candidates(local, context, self.safety, limit=self.settings.prediction.max_candidates)

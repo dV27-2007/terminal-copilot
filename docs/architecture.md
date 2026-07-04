@@ -104,6 +104,31 @@ Retention is explicit through `cleanup_retention()`. It removes old failed
 one-off commands first, then caps total stored commands while preferring to keep
 accepted, successful, and frequently used commands.
 
+## Prediction Pipeline
+
+Prediction is local-first and quiet by default. `daemon/predictor.py` now applies
+cheap gates before building project/git context:
+
+1. Clamp the cursor to the current buffer.
+2. Reject secret-looking input immediately.
+3. Reject input that does not look command-like.
+4. Build local context only after those checks pass.
+5. Collect history candidates and lightweight project-context candidates.
+6. Rank and safety-filter candidates.
+7. Return ghost text only when the full command validly continues the current
+   buffer.
+
+`daemon/context_detector.py` treats input as command-like when the first token is
+on `PATH`, is a known local tool, is present in command history, is a close known
+tool typo, or the buffer starts with a known multi-token command such as
+`docker compose` or `npm run`.
+
+Natural-language questions and sentences are rejected before shell-character
+checks. This includes common English and Russian question starts, mixed text such
+as `docker почему не работает`, and common Armenian transliteration question
+starts such as `inchpes`/`vonc`. Typo-aware detection only gates whether the input
+is eligible for local prediction; it does not invent corrected commands.
+
 ## Stages
 
 Stage 1: local predictor without AI.
