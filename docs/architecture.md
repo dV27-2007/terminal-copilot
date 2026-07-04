@@ -129,6 +129,41 @@ as `docker почему не работает`, and common Armenian transliterat
 starts such as `inchpes`/`vonc`. Typo-aware detection only gates whether the input
 is eligible for local prediction; it does not invent corrected commands.
 
+## Scoring And Safety
+
+Scoring is deterministic and local-only. `daemon/scoring.py` ranks candidates
+with explicit weighted signals:
+
+```text
+score =
+  candidate base score
+  + prefix/fuzzy match
+  + source reliability
+  + same cwd/project/git branch
+  + recency
+  + log frequency
+  + success rate
+  + accepted count
+  + project relevance
+  - ignored count
+  - failure/recent-failure penalties
+  - risk/root-mode penalties
+```
+
+History is the most reliable source, project-context candidates get a smaller
+source boost, and placeholder AI-source candidates receive a default penalty.
+Strong accepted history in the same cwd/project should outrank project-generated
+candidates. Project candidates still work when no strong history result exists.
+
+`score_to_confidence()` maps the bounded deterministic score to `0..0.99`.
+Weak candidates can still be returned through the existing low-confidence local
+fallback, but dangerous candidates are removed before ranking.
+
+`daemon/safety.py` classifies suggestions as `safe`, `caution`, or `dangerous`.
+Dangerous commands are not returned as ghost text. Caution commands are penalized,
+with a larger penalty in root mode. Root mode also rejects non-safe AI-source
+suggestions if an AI provider is ever enabled.
+
 ## Stages
 
 Stage 1: local predictor without AI.

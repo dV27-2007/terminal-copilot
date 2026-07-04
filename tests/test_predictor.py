@@ -32,6 +32,8 @@ def test_history_examples_predict_expected_suffixes(tmp_path: Path):
         ("docker compose logs -f backend", "docker compose lo", "gs -f backend"),
         ("git checkout dev", "git ch", "eckout dev"),
         ("pytest tests/ -q", "pytest te", "sts/ -q"),
+        ("npm run dev", "npm ru", "n dev"),
+        ("make test", "make te", "st"),
     ]
     for command, buffer, expected_ghost in examples:
         predictor.record_command(command, cwd=str(tmp_path), exit_code=0, duration_ms=100)
@@ -109,6 +111,26 @@ def test_invalid_candidate_that_cannot_continue_buffer_returns_empty(tmp_path: P
 
     predictor.history.search_prefix = fake_search_prefix  # type: ignore[method-assign]
     suggestion = predictor.predict(PredictRequest(buffer="docker co", cwd=str(tmp_path), shell="zsh"))
+
+    assert suggestion.ghost_text == ""
+    assert suggestion.full_command == ""
+
+
+def test_dangerous_history_command_is_not_returned_as_ghost_text(tmp_path: Path):
+    predictor = make_predictor(tmp_path)
+    predictor.record_command("rm -rf /", cwd=str(tmp_path), exit_code=0, duration_ms=100)
+
+    suggestion = predictor.predict(PredictRequest(buffer="rm -rf", cwd=str(tmp_path), shell="zsh"))
+
+    assert suggestion.ghost_text == ""
+    assert suggestion.full_command == ""
+
+
+def test_root_mode_does_not_return_dangerous_suggestion(tmp_path: Path):
+    predictor = make_predictor(tmp_path)
+    predictor.record_command("sudo rm -rf /", cwd=str(tmp_path), exit_code=0, duration_ms=100)
+
+    suggestion = predictor.predict(PredictRequest(buffer="sudo rm -rf", cwd=str(tmp_path), shell="zsh", root_mode=True))
 
     assert suggestion.ghost_text == ""
     assert suggestion.full_command == ""
