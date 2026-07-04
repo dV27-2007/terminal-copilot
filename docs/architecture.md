@@ -55,8 +55,10 @@ The response preserves the existing prediction fields:
 {"ghost_text":"mpose ps","full_command":"docker compose ps","source":"history","confidence":0.8,"risk":"safe","reason":""}
 ```
 
-HTTP on `127.0.0.1:8765` remains available as a compatibility fallback. Shell
-adapters have not been switched to the socket path yet.
+HTTP on `127.0.0.1:8765` remains available as a compatibility fallback. The zsh
+prediction adapter uses the socket path first and falls back to HTTP only when
+the socket is unavailable. Command/event recording still uses the existing HTTP
+event endpoint.
 
 ## Stages
 

@@ -6,15 +6,60 @@
 : ${TERM_COPILOT_HOST:=127.0.0.1}
 : ${TERM_COPILOT_PORT:=8765}
 : ${TERM_COPILOT_URL:=http://${TERM_COPILOT_HOST}:${TERM_COPILOT_PORT}}
-: ${TERM_COPILOT_TIMEOUT:=0.45}
+: ${TERM_COPILOT_SOCKET:=${HOME}/.cache/term-copilot/daemon.sock}
+: ${TERM_COPILOT_TIMEOUT:=0.20}
 
 zmodload zsh/datetime 2>/dev/null || true
+zmodload zsh/net/socket 2>/dev/null || true
+zmodload zsh/system 2>/dev/null || true
 
 typeset -g TERM_COPILOT_LAST_FULL=""
 typeset -g TERM_COPILOT_LAST_BUFFER=""
 typeset -g TERM_COPILOT_LAST_SOURCE=""
 typeset -g TERM_COPILOT_EXEC_CMD=""
 typeset -g TERM_COPILOT_EXEC_STARTED=""
+
+_term_copilot_json_escape() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  value=${value//$'\r'/\\r}
+  value=${value//$'\t'/\\t}
+  REPLY="$value"
+}
+
+_term_copilot_json_unescape() {
+  local value="$1"
+  value=${value//\\n/$'\n'}
+  value=${value//\\r/$'\r'}
+  value=${value//\\t/$'\t'}
+  value=${value//\\\"/\"}
+  value=${value//\\\\/\\}
+  REPLY="$value"
+}
+
+_term_copilot_json_string_or_null() {
+  local value="$1"
+  if [[ -z "$value" ]]; then
+    REPLY="null"
+    return
+  fi
+  _term_copilot_json_escape "$value"
+  REPLY="\"$REPLY\""
+}
+
+_term_copilot_json_get_string() {
+  local json="$1"
+  local key="$2"
+  local -a match mbegin mend
+  if [[ "$json" =~ "\"${key}\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\"" ]]; then
+    _term_copilot_json_unescape "$match[1]"
+    return 0
+  fi
+  REPLY=""
+  return 1
+}
 
 _term_copilot_http_json() {
   local endpoint="$1"
@@ -39,21 +84,65 @@ PY
 _term_copilot_predict_json() {
   local prefix="$1"
   local cursor="$2"
-  TERM_COPILOT_BUFFER="$prefix" TERM_COPILOT_CURSOR="$cursor" TERM_COPILOT_CWD="$PWD" python3 - <<'PY' 2>/dev/null
-import json
-import os
-payload = {
-    "buffer": os.environ.get("TERM_COPILOT_BUFFER", ""),
-    "cursor": int(os.environ.get("TERM_COPILOT_CURSOR", "0") or 0),
-    "cwd": os.environ.get("TERM_COPILOT_CWD"),
-    "shell": "zsh",
-    "user": os.environ.get("USER"),
-    "effective_uid": os.geteuid() if hasattr(os, "geteuid") else None,
-    "original_user": os.environ.get("SUDO_USER") or os.environ.get("TERM_COPILOT_USER"),
-    "root_mode": os.environ.get("TERM_COPILOT_ROOT_MODE") == "1",
+  local buffer_json cwd_json user_json original_user_json root_mode effective_uid
+
+  [[ -n "$cursor" ]] || cursor="${#prefix}"
+  effective_uid="${EUID:-null}"
+  [[ "$effective_uid" == <-> ]] || effective_uid="null"
+  root_mode="false"
+  [[ "${TERM_COPILOT_ROOT_MODE:-}" == "1" || "$effective_uid" == "0" ]] && root_mode="true"
+
+  _term_copilot_json_escape "$prefix"
+  buffer_json="$REPLY"
+  _term_copilot_json_escape "$PWD"
+  cwd_json="$REPLY"
+  _term_copilot_json_string_or_null "$USER"
+  user_json="$REPLY"
+  _term_copilot_json_string_or_null "${SUDO_USER:-${TERM_COPILOT_USER:-}}"
+  original_user_json="$REPLY"
+
+  print -r -- "{\"protocol_version\":1,\"buffer\":\"${buffer_json}\",\"cursor\":${cursor},\"cwd\":\"${cwd_json}\",\"shell\":\"zsh\",\"user\":${user_json},\"effective_uid\":${effective_uid},\"original_user\":${original_user_json},\"root_mode\":${root_mode}}"
 }
-print(json.dumps(payload, ensure_ascii=False), end="")
-PY
+
+_term_copilot_socket_json() {
+  local payload="$1"
+  local socket_path="${TERM_COPILOT_SOCKET:-${HOME}/.cache/term-copilot/daemon.sock}"
+  local fd response rc
+
+  [[ -n "$socket_path" && -S "$socket_path" ]] || return 1
+  zmodload zsh/net/socket 2>/dev/null || return 1
+  zmodload zsh/system 2>/dev/null || return 1
+
+  zsocket "$socket_path" 2>/dev/null || return 1
+  fd="$REPLY"
+  [[ "$fd" == <-> ]] || return 1
+
+  syswrite -o "$fd" "${payload}"$'\n' >/dev/null 2>&1
+  rc=$?
+  if (( rc != 0 )); then
+    exec {fd}>&- 2>/dev/null
+    return 1
+  fi
+
+  sysread -i "$fd" -s 8192 -t "$TERM_COPILOT_TIMEOUT" response 2>/dev/null
+  rc=$?
+  exec {fd}>&- 2>/dev/null
+  (( rc == 0 )) || return 1
+
+  response="${response%%$'\n'*}"
+  [[ -n "$response" ]] || return 1
+  print -r -- "$response"
+}
+
+_term_copilot_predict_transport() {
+  local payload="$1"
+  local response
+  response="$(_term_copilot_socket_json "$payload")"
+  if [[ -n "$response" ]]; then
+    print -r -- "$response"
+    return 0
+  fi
+  _term_copilot_http_json "/predict" "$payload"
 }
 
 _term_copilot_event_json() {
@@ -105,38 +194,17 @@ _zsh_autosuggest_strategy_term_copilot() {
 
   local payload response ghost full source
   payload="$(_term_copilot_predict_json "$prefix" "${#prefix}")"
-  response="$(_term_copilot_http_json "/predict" "$payload")"
+  response="$(_term_copilot_predict_transport "$payload")"
   [[ -z "$response" ]] && return
 
-  ghost="$(TERM_COPILOT_RESPONSE="$response" python3 - <<'PY' 2>/dev/null
-import json, os
-try:
-    data = json.loads(os.environ.get("TERM_COPILOT_RESPONSE", "{}"))
-    print(data.get("ghost_text", ""), end="")
-except Exception:
-    pass
-PY
-)"
+  _term_copilot_json_get_string "$response" "ghost_text" || return
+  ghost="$REPLY"
   [[ -z "$ghost" ]] && return
 
-  full="$(TERM_COPILOT_RESPONSE="$response" python3 - <<'PY' 2>/dev/null
-import json, os
-try:
-    data = json.loads(os.environ.get("TERM_COPILOT_RESPONSE", "{}"))
-    print(data.get("full_command", ""), end="")
-except Exception:
-    pass
-PY
-)"
-  source="$(TERM_COPILOT_RESPONSE="$response" python3 - <<'PY' 2>/dev/null
-import json, os
-try:
-    data = json.loads(os.environ.get("TERM_COPILOT_RESPONSE", "{}"))
-    print(data.get("source", ""), end="")
-except Exception:
-    pass
-PY
-)"
+  _term_copilot_json_get_string "$response" "full_command"
+  full="$REPLY"
+  _term_copilot_json_get_string "$response" "source"
+  source="$REPLY"
 
   TERM_COPILOT_LAST_BUFFER="$prefix"
   TERM_COPILOT_LAST_FULL="$full"

@@ -1,8 +1,10 @@
 import importlib
 import json
 import os
+import shutil
 import socket
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -123,3 +125,42 @@ def test_http_predict_handler_still_available(tmp_path: Path, monkeypatch: pytes
     assert response["full_command"] == "docker compose ps"
     assert response["ghost_text"] == "mpose ps"
     assert response["source"] == "history"
+
+
+@pytest.mark.skipif(not unix_socket_supported(), reason="Unix sockets are not available")
+@pytest.mark.skipif(shutil.which("zsh") is None, reason="zsh is not available")
+def test_zsh_strategy_predicts_over_unix_socket(tmp_path: Path):
+    predictor = make_predictor(tmp_path)
+    predictor.record_command("docker compose ps", cwd=str(Path.cwd()), exit_code=0, duration_ms=25)
+    socket_path = tmp_path / "daemon.sock"
+    server = UnixSocketPredictionServer(predictor, str(socket_path))
+    server.start_in_thread()
+    env = {
+        **os.environ,
+        "TERM_COPILOT_SOCKET": str(socket_path),
+        "TERM_COPILOT_URL": "http://127.0.0.1:9",
+        "TERM_COPILOT_TIMEOUT": "0.05",
+    }
+    try:
+        proc = subprocess.run(
+            [
+                "zsh",
+                "-fc",
+                "source zsh/terminal-copilot.zsh; "
+                "_zsh_autosuggest_strategy_term_copilot 'docker co'; "
+                "print -r -- $suggestion",
+            ],
+            cwd=Path.cwd(),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=2.0,
+            check=False,
+        )
+    finally:
+        server.stop()
+
+    assert proc.returncode == 0
+    assert proc.stderr == ""
+    assert proc.stdout.strip() == "docker compose ps"

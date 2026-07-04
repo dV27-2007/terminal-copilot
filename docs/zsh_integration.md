@@ -6,7 +6,16 @@ The zsh integration defines a `zsh-autosuggestions` custom strategy:
 _zsh_autosuggest_strategy_term_copilot
 ```
 
-The strategy sends the current prefix to `/predict`, receives `ghost_text`, and returns the full suggestion to zsh-autosuggestions.
+The strategy sends the current prefix to the local daemon, receives `ghost_text`,
+and returns the full suggestion to zsh-autosuggestions. Prediction uses Unix
+socket IPC first when `$TERM_COPILOT_SOCKET` or the default
+`~/.cache/term-copilot/daemon.sock` exists. If the socket path is unavailable,
+the plugin falls back to the existing localhost HTTP `/predict` endpoint.
+
+The socket path uses zsh builtins from `zsh/net/socket` and `zsh/system`, so the
+prediction hot path does not spawn Python when Unix socket IPC is available.
+Failures are silent and bounded by `$TERM_COPILOT_TIMEOUT`, defaulting to
+`0.20` seconds.
 
 Suggested config:
 
@@ -24,3 +33,5 @@ Ctrl+F
 ```
 
 The plugin records executed commands through `preexec` and `precmd` hooks. It does not record commands where daemon-side redaction detects secrets.
+Command execution and suggestion-accepted events still use the existing
+background HTTP event helper.
