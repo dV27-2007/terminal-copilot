@@ -60,6 +60,50 @@ prediction adapter uses the socket path first and falls back to HTTP only when
 the socket is unavailable. Command/event recording still uses the existing HTTP
 event endpoint.
 
+## Local Storage
+
+Command history is stored in local SQLite. `daemon/history_store.py` owns the
+`commands` table and uses `PRAGMA user_version` for lightweight schema
+versioning. Version 1 creates:
+
+```text
+commands(
+  id,
+  command_text,
+  normalized_command,
+  cwd,
+  project_root,
+  git_branch,
+  exit_code,
+  duration_ms,
+  used_count,
+  success_count,
+  fail_count,
+  accepted_count,
+  ignored_count,
+  source,
+  created_at,
+  last_used_at
+)
+```
+
+The history database enables WAL mode during initialization. Prediction-oriented
+indexes cover normalized command prefix lookup, case-insensitive prefix lookup,
+context ranking by cwd/project/branch, recent commands, and retention cleanup.
+
+Recording is local-only and rejects commands that match the shared secret
+detector, including obvious tokens, API keys, passwords, bearer tokens, JWTs,
+private key material, database URLs, `.env` paths, and credential-like paths.
+
+Repeated records for the same normalized command and context are updated
+in-place with null-safe context matching, so `used_count`, `success_count`,
+`fail_count`, `exit_code`, `duration_ms`, and `last_used_at` stay current instead
+of creating duplicate nullable-context rows.
+
+Retention is explicit through `cleanup_retention()`. It removes old failed
+one-off commands first, then caps total stored commands while preferring to keep
+accepted, successful, and frequently used commands.
+
 ## Stages
 
 Stage 1: local predictor without AI.
