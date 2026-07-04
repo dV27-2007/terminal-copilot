@@ -3,13 +3,26 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 from .config import load_settings
+from .ipc import UnixSocketPredictionServer, unix_socket_supported
 from .models import PredictRequest
 from .predictor import Predictor
+
+
+def start_ipc_server(args: argparse.Namespace, settings) -> UnixSocketPredictionServer | None:
+    if args.no_ipc or not unix_socket_supported():
+        return None
+    socket_path = args.socket or os.getenv("TERM_COPILOT_SOCKET") or settings.daemon.socket_path
+    server = UnixSocketPredictionServer(Predictor(settings=settings), socket_path)
+    try:
+        server.start_in_thread()
+    except OSError as exc:
+        print(f"term-copilot: Unix socket IPC unavailable: {exc}", file=sys.stderr)
+        return None
+    return server
 
 
 def run_daemon(args: argparse.Namespace) -> int:
@@ -19,9 +32,14 @@ def run_daemon(args: argparse.Namespace) -> int:
         print("uvicorn is required: pip install -e .", file=sys.stderr)
         return 2
     settings = load_settings(args.config_dir)
+    ipc_server = start_ipc_server(args, settings)
     host = args.host or settings.daemon.host
     port = args.port or settings.daemon.port
-    uvicorn.run("daemon.server:app", host=host, port=port, reload=False, log_level=args.log_level)
+    try:
+        uvicorn.run("daemon.server:app", host=host, port=port, reload=False, log_level=args.log_level)
+    finally:
+        if ipc_server is not None:
+            ipc_server.stop()
     return 0
 
 
@@ -80,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     p_daemon.add_argument("--host", default=None)
     p_daemon.add_argument("--port", type=int, default=None)
     p_daemon.add_argument("--log-level", default="warning")
+    p_daemon.add_argument("--socket", default=None)
+    p_daemon.add_argument("--no-ipc", action="store_true")
     p_daemon.set_defaults(func=run_daemon)
 
     p_predict = sub.add_parser("predict")
