@@ -129,6 +129,57 @@ as `docker почему не работает`, and common Armenian transliterat
 starts such as `inchpes`/`vonc`. Typo-aware detection only gates whether the input
 is eligible for local prediction; it does not invent corrected commands.
 
+## Project Context
+
+`daemon/project_detector.py` detects project roots by walking upward from the
+current working directory and checking only known shallow markers:
+
+```text
+.git
+docker-compose.yml / docker-compose.yaml / compose.yml / compose.yaml
+package.json
+Makefile / makefile
+pyproject.toml / pytest.ini / setup.cfg / requirements.txt / manage.py
+tests/
+```
+
+Project profiles are cached in memory by project root. Each profile stores the
+project root, project types, marker paths, marker mtimes, a marker hash, Docker
+Compose services, package scripts, Make targets, pytest candidate paths, and
+detected tools. The cache is bounded and invalidated when marker stat metadata
+changes. The hot path still stats known marker files, but it does not reparse
+project files unless their marker signature changes.
+
+Parsing stays deliberately shallow:
+
+- Docker Compose services are read from known compose files with PyYAML when
+  available. Broken YAML returns no services.
+- `package.json` scripts are parsed only when the file is under the marker size
+  limit. `pnpm` and `yarn` candidates require lockfile or package-manager
+  evidence.
+- Makefile parsing accepts simple public targets and ignores special/internal
+  targets such as `.PHONY`.
+- pytest detection checks pytest config files and shallow test directories only;
+  it does not recursively scan the repository.
+
+Project-generated candidates include:
+
+```text
+docker compose ps
+docker compose logs -f <service>
+docker compose up -d <service>
+docker compose restart <service>
+npm run <script>
+pnpm run <script>
+yarn <script>
+make <target>
+pytest <path> -q
+```
+
+Project candidates enter the same local ranking and safety filtering as history
+candidates. They do not include destructive prune commands and do not read `.env`
+or secret files.
+
 ## Scoring And Safety
 
 Scoring is deterministic and local-only. `daemon/scoring.py` ranks candidates

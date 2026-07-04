@@ -5,6 +5,7 @@ from daemon.config import Settings
 from daemon.history_store import HistoryStore
 from daemon.models import PredictRequest
 from daemon.predictor import Predictor
+from daemon.project_detector import clear_project_cache
 
 
 def make_predictor(tmp_path: Path) -> Predictor:
@@ -14,6 +15,10 @@ def make_predictor(tmp_path: Path) -> Predictor:
     history = HistoryStore(settings.daemon.db_path)
     cache = CacheStore(settings.daemon.db_path)
     return Predictor(settings=settings, history=history, cache=cache)
+
+
+def setup_function():
+    clear_project_cache()
 
 
 def test_predicts_from_history(tmp_path: Path):
@@ -141,3 +146,63 @@ def test_project_context_docker_logs(tmp_path: Path):
     predictor = make_predictor(tmp_path)
     suggestion = predictor.predict(PredictRequest(buffer="docker compose lo", cwd=str(tmp_path)))
     assert suggestion.full_command == "docker compose logs -f backend"
+
+
+def test_project_context_docker_up_and_restart_candidates(tmp_path: Path):
+    (tmp_path / "docker-compose.yml").write_text("services:\n  backend:\n    image: app\n")
+    predictor = make_predictor(tmp_path)
+
+    up = predictor.predict(PredictRequest(buffer="docker compose up", cwd=str(tmp_path)))
+    restart = predictor.predict(PredictRequest(buffer="docker compose restart", cwd=str(tmp_path)))
+
+    assert up.full_command == "docker compose up -d backend"
+    assert restart.full_command == "docker compose restart backend"
+
+
+def test_project_context_npm_candidate_without_history(tmp_path: Path):
+    (tmp_path / "package.json").write_text('{"scripts":{"dev":"vite","build":"vite build"}}')
+    predictor = make_predictor(tmp_path)
+
+    suggestion = predictor.predict(PredictRequest(buffer="npm run", cwd=str(tmp_path)))
+
+    assert suggestion.full_command == "npm run build"
+    assert suggestion.source == "project_context"
+
+
+def test_project_context_pnpm_and_yarn_candidates_with_evidence(tmp_path: Path):
+    (tmp_path / "package.json").write_text('{"packageManager":"pnpm@9.0.0","scripts":{"dev":"vite"}}')
+    (tmp_path / "yarn.lock").write_text("")
+    predictor = make_predictor(tmp_path)
+
+    pnpm = predictor.predict(PredictRequest(buffer="pnpm run", cwd=str(tmp_path)))
+    yarn = predictor.predict(PredictRequest(buffer="yarn", cwd=str(tmp_path)))
+
+    assert pnpm.full_command == "pnpm run dev"
+    assert yarn.full_command == "yarn dev"
+
+
+def test_project_context_make_candidate_without_history(tmp_path: Path):
+    (tmp_path / "Makefile").write_text("test:\n\tpytest\n")
+    predictor = make_predictor(tmp_path)
+
+    suggestion = predictor.predict(PredictRequest(buffer="make", cwd=str(tmp_path)))
+
+    assert suggestion.full_command == "make test"
+
+
+def test_project_context_pytest_candidate_without_history(tmp_path: Path):
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    (tmp_path / "tests").mkdir()
+    predictor = make_predictor(tmp_path)
+
+    suggestion = predictor.predict(PredictRequest(buffer="pytest", cwd=str(tmp_path)))
+
+    assert suggestion.full_command == "pytest tests/ -q"
+
+
+def test_project_context_does_not_generate_dangerous_candidates(tmp_path: Path):
+    (tmp_path / "docker-compose.yml").write_text("services:\n  backend:\n    image: app\n")
+    predictor = make_predictor(tmp_path)
+    context = predictor.predict(PredictRequest(buffer="docker compose", cwd=str(tmp_path)))
+
+    assert "prune" not in context.full_command

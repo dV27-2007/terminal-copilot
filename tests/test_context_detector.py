@@ -4,7 +4,7 @@ from pathlib import Path
 from daemon.config import Settings
 from daemon.context_detector import is_command_like
 from daemon.history_store import HistoryStore
-from daemon.project_detector import detect_project
+from daemon.project_detector import clear_project_cache, detect_project
 
 
 def test_natural_language_not_command_like():
@@ -57,6 +57,7 @@ def test_transliterated_question_not_command_like():
 
 
 def test_detect_project_context(tmp_path: Path):
+    clear_project_cache()
     (tmp_path / "docker-compose.yml").write_text("services:\n  backend:\n    image: app\n  celery:\n    image: app\n")
     (tmp_path / "package.json").write_text('{"scripts":{"dev":"vite","build":"vite build"}}')
     (tmp_path / "tests").mkdir()
@@ -64,4 +65,4 @@ def test_detect_project_context(tmp_path: Path):
     assert profile.project_root == str(tmp_path)
     assert profile.docker_services == ["backend", "celery"]
     assert "dev" in profile.package_scripts
-    assert "tests" in profile.pytest_paths
+    assert "tests/" in profile.pytest_paths

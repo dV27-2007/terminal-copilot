@@ -90,16 +90,25 @@ class Predictor:
         p = context.project
         out: list[Candidate] = []
         if p.docker_services:
-            first = p.docker_services[0]
-            templates = [
-                f"docker compose logs -f {first}",
-                f"docker compose up -d {' '.join(p.docker_services[:2])}",
-                "docker compose ps",
-                "docker compose build",
-            ]
+            templates = ["docker compose ps"]
+            for service in p.docker_services[:8]:
+                templates.extend(
+                    [
+                        f"docker compose logs -f {service}",
+                        f"docker compose up -d {service}",
+                        f"docker compose restart {service}",
+                    ]
+                )
             out.extend(Candidate(t, "project_context", base_score=65) for t in templates if t.startswith(b))
         if p.package_scripts:
-            out.extend(Candidate(f"npm run {script}", "project_context", base_score=60) for script in p.package_scripts if f"npm run {script}".startswith(b))
+            script_templates: list[str] = []
+            if "npm" in p.detected_tools:
+                script_templates.extend(f"npm run {script}" for script in p.package_scripts)
+            if "pnpm" in p.detected_tools:
+                script_templates.extend(f"pnpm run {script}" for script in p.package_scripts)
+            if "yarn" in p.detected_tools:
+                script_templates.extend(f"yarn {script}" for script in p.package_scripts)
+            out.extend(Candidate(t, "project_context", base_score=60) for t in script_templates if t.startswith(b))
         if p.make_targets:
             out.extend(Candidate(f"make {target}", "project_context", base_score=58) for target in p.make_targets if f"make {target}".startswith(b))
         if p.pytest_paths:

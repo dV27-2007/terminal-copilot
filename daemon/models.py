@@ -22,6 +22,10 @@ class PredictRequest:
 class ProjectProfile:
     project_root: str | None = None
     project_type: str = "unknown"
+    project_types: list[str] = field(default_factory=list)
+    marker_paths: list[str] = field(default_factory=list)
+    marker_mtimes: dict[str, float] = field(default_factory=dict)
+    marker_hash: str = ""
     docker_services: list[str] = field(default_factory=list)
     package_scripts: list[str] = field(default_factory=list)
     make_targets: list[str] = field(default_factory=list)
