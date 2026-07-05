@@ -30,6 +30,33 @@ The shell integration is not the brain. It only captures the current buffer, cwd
 - `zsh/terminal-copilot.zsh`: zsh autosuggestion strategy.
 - `bash/terminal-copilot.bash`: bash fallback.
 
+## CLI Tooling
+
+`daemon/main.py` provides the local operational CLI:
+
+```text
+daemon      start HTTP plus Unix socket IPC when available
+predict     run one local prediction
+record      record one executed command
+event       record accepted/ignored/executed events
+status      print fast local daemon/storage/shell status
+doctor      run local PASS/WARN/FAIL diagnostics
+install     add managed shell rc blocks
+uninstall   remove only managed shell rc blocks
+```
+
+Install blocks are delimited with exact markers:
+
+```text
+# >>> term-copilot init >>>
+# <<< term-copilot init <<<
+```
+
+Install is idempotent, uses absolute plugin paths, and creates backups before
+modifying existing rc files. Uninstall removes only managed blocks and does not
+delete history/cache data. Status and doctor are local-only and do not enable AI
+or contact external services.
+
 ## Local IPC
 
 The daemon now starts a Unix domain socket prediction endpoint on POSIX systems

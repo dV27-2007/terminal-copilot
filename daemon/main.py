@@ -3,13 +3,25 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import socket
+import sqlite3
+import stat
+import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
+from typing import Any
 
 from .config import load_settings
-from .ipc import UnixSocketPredictionServer, unix_socket_supported
+from .ipc import PROTOCOL_VERSION, UnixSocketPredictionServer, request_prediction, unix_socket_supported
 from .models import PredictRequest
 from .predictor import Predictor
+
+MANAGED_START = "# >>> term-copilot init >>>"
+MANAGED_END = "# <<< term-copilot init <<<"
+SUPPORTED_SHELLS = ("zsh", "bash")
 
 
 def start_ipc_server(args: argparse.Namespace, settings) -> UnixSocketPredictionServer | None:
@@ -84,28 +96,375 @@ def event(args: argparse.Namespace) -> int:
     return 2
 
 
-def install(args: argparse.Namespace) -> int:
-    project_root = Path(__file__).resolve().parents[1]
-    shell_file = project_root / "zsh" / "terminal-copilot.zsh"
-    bash_file = project_root / "bash" / "terminal-copilot.bash"
+def _shells_from_arg(value: str) -> list[str]:
+    if value == "all":
+        return list(SUPPORTED_SHELLS)
+    if value in SUPPORTED_SHELLS:
+        return [value]
+    raise ValueError(f"unsupported shell: {value}")
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _shell_plugin_path(shell: str) -> Path:
+    root = _project_root()
+    if shell == "zsh":
+        return root / "zsh" / "terminal-copilot.zsh"
+    if shell == "bash":
+        return root / "bash" / "terminal-copilot.bash"
+    raise ValueError(f"unsupported shell: {shell}")
+
+
+def _rc_path(shell: str, *, root: bool = False) -> Path:
+    if root:
+        return Path("/root/.zshrc" if shell == "zsh" else "/root/.bashrc")
     home = Path.home()
-    if args.root:
-        zshrc = Path("/root/.zshrc")
-        bashrc = Path("/root/.bashrc")
-        socket = args.socket or os.getenv("TERM_COPILOT_SOCKET") or str(home / ".cache/term-copilot/daemon.sock")
-        block = f"\n# terminal-copilot root integration\nexport TERM_COPILOT_USER={os.getenv('SUDO_USER') or os.getenv('USER') or 'david'}\nexport TERM_COPILOT_SOCKET={socket}\nexport TERM_COPILOT_ROOT_MODE=1\n[ -f {shell_file} ] && source {shell_file}\n[ -f {bash_file} ] && source {bash_file}\n"
-        targets = [zshrc, bashrc]
+    return home / (".zshrc" if shell == "zsh" else ".bashrc")
+
+
+def _sh_quote(value: str | Path) -> str:
+    text = str(value)
+    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def _default_socket_path(settings) -> str:
+    return os.getenv("TERM_COPILOT_SOCKET") or settings.daemon.socket_path
+
+
+def _http_url(settings) -> str:
+    return f"http://{settings.daemon.host}:{settings.daemon.port}"
+
+
+def _managed_block(shell: str, *, socket_path: str, root: bool = False) -> str:
+    plugin = _shell_plugin_path(shell)
+    lines = [
+        MANAGED_START,
+        "# Managed by terminal-copilot. Remove with: python -m daemon.main uninstall",
+        f"export TERM_COPILOT_SOCKET=${{TERM_COPILOT_SOCKET:-{_sh_quote(socket_path)}}}",
+    ]
+    if root:
+        user = os.getenv("SUDO_USER") or os.getenv("USER") or ""
+        if user:
+            lines.append(f"export TERM_COPILOT_USER={_sh_quote(user)}")
+        lines.append("export TERM_COPILOT_ROOT_MODE=1")
+    lines.extend(
+        [
+            f"[ -f {_sh_quote(plugin)} ] && source {_sh_quote(plugin)}",
+            MANAGED_END,
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _find_managed_blocks(text: str) -> list[tuple[int, int]]:
+    lines = text.splitlines(keepends=True)
+    blocks: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, line in enumerate(lines):
+        if line.strip() == MANAGED_START:
+            start = index
+        elif line.strip() == MANAGED_END and start is not None:
+            blocks.append((start, index + 1))
+            start = None
+    return blocks
+
+
+def _replace_managed_blocks(text: str, block: str) -> tuple[str, int]:
+    lines = text.splitlines(keepends=True)
+    blocks = _find_managed_blocks(text)
+    if not blocks:
+        prefix = text
+        if prefix and not prefix.endswith("\n"):
+            prefix += "\n"
+        return prefix + block, 0
+
+    kept: list[str] = []
+    cursor = 0
+    for start, end in blocks:
+        kept.extend(lines[cursor:start])
+        cursor = end
+    kept.extend(lines[cursor:])
+    prefix = "".join(kept).rstrip() + "\n\n" if "".join(kept).strip() else ""
+    return prefix + block, len(blocks)
+
+
+def _remove_managed_blocks(text: str) -> tuple[str, int]:
+    lines = text.splitlines(keepends=True)
+    blocks = _find_managed_blocks(text)
+    if not blocks:
+        return text, 0
+    kept: list[str] = []
+    cursor = 0
+    for start, end in blocks:
+        kept.extend(lines[cursor:start])
+        cursor = end
+    kept.extend(lines[cursor:])
+    result = "".join(kept)
+    if result and not result.endswith("\n"):
+        result += "\n"
+    return result, len(blocks)
+
+
+def _backup_file(path: Path) -> Path | None:
+    if not path.exists():
+        return None
+    backup = path.with_name(f"{path.name}.term-copilot.bak")
+    counter = 1
+    while backup.exists():
+        backup = path.with_name(f"{path.name}.term-copilot.bak.{counter}")
+        counter += 1
+    shutil.copy2(path, backup)
+    return backup
+
+
+def install_shell(shell: str, *, socket_path: str, root: bool = False) -> tuple[Path, str]:
+    target = _rc_path(shell, root=root)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing = target.read_text(errors="ignore") if target.exists() else ""
+    block = _managed_block(shell, socket_path=socket_path, root=root)
+    updated, replaced = _replace_managed_blocks(existing, block)
+    if updated == existing:
+        return target, "already installed"
+    backup = _backup_file(target)
+    target.write_text(updated)
+    if replaced > 1:
+        action = f"updated; collapsed {replaced} managed blocks"
+    elif replaced == 1:
+        action = "updated managed block"
     else:
-        block = f"\n# terminal-copilot user integration\nexport TERM_COPILOT_HOME={home}\nexport TERM_COPILOT_SOCKET=${{TERM_COPILOT_SOCKET:-{home}/.cache/term-copilot/daemon.sock}}\n[ -f {shell_file} ] && source {shell_file}\n[ -f {bash_file} ] && source {bash_file}\n"
-        targets = [home / ".zshrc", home / ".bashrc"]
-    for target in targets:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        existing = target.read_text(errors="ignore") if target.exists() else ""
-        if "terminal-copilot" not in existing:
-            target.write_text(existing + block)
-            print(f"updated {target}")
+        action = "installed"
+    if backup:
+        action += f"; backup {backup}"
+    return target, action
+
+
+def uninstall_shell(shell: str, *, root: bool = False) -> tuple[Path, str]:
+    target = _rc_path(shell, root=root)
+    if not target.exists():
+        return target, "not installed"
+    existing = target.read_text(errors="ignore")
+    updated, removed = _remove_managed_blocks(existing)
+    if removed == 0:
+        return target, "not installed"
+    backup = _backup_file(target)
+    target.write_text(updated)
+    action = f"removed {removed} managed block" + ("s" if removed != 1 else "")
+    if backup:
+        action += f"; backup {backup}"
+    return target, action
+
+
+def _count_table(db_path: str, table: str) -> int | None:
+    path = Path(db_path).expanduser()
+    if not path.exists():
+        return None
+    try:
+        with sqlite3.connect(path) as conn:
+            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+            if not row:
+                return None
+            return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    except sqlite3.Error:
+        return None
+
+
+def _socket_status(socket_path: str, *, cwd: str | None = None) -> tuple[bool, str]:
+    path = Path(socket_path).expanduser()
+    if not unix_socket_supported():
+        return False, "unsupported"
+    if not path.exists():
+        return False, "missing"
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        return False, f"stat failed: {exc}"
+    if not stat.S_ISSOCK(mode):
+        return False, "path exists but is not a socket"
+    try:
+        request_prediction(
+            str(path),
+            {"protocol_version": PROTOCOL_VERSION, "buffer": "", "cursor": 0, "cwd": cwd or os.getcwd(), "shell": "status"},
+            timeout=0.2,
+        )
+    except Exception as exc:
+        return False, f"unreachable: {exc}"
+    return True, "reachable"
+
+
+def _http_status(url: str) -> tuple[bool, str]:
+    try:
+        with urllib.request.urlopen(url + "/health", timeout=0.25) as response:
+            if response.status == 200:
+                return True, "reachable"
+            return False, f"HTTP {response.status}"
+    except (urllib.error.URLError, TimeoutError, OSError, socket.timeout) as exc:
+        return False, f"unreachable: {exc}"
+
+
+def _managed_block_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return len(_find_managed_blocks(path.read_text(errors="ignore")))
+
+
+def _legacy_integration_present(path: Path) -> bool:
+    if not path.exists():
+        return False
+    text = path.read_text(errors="ignore")
+    return "terminal-copilot" in text and MANAGED_START not in text
+
+
+def status(args: argparse.Namespace) -> int:
+    settings = load_settings(args.config_dir)
+    socket_path = _default_socket_path(settings)
+    http_url = _http_url(settings)
+    socket_ok, socket_msg = _socket_status(socket_path)
+    http_ok, http_msg = _http_status(http_url)
+    if socket_ok:
+        mode = "Unix socket"
+    elif http_ok:
+        mode = "HTTP fallback"
+    else:
+        mode = "unavailable"
+    db_path = str(Path(settings.daemon.db_path).expanduser())
+    command_count = _count_table(db_path, "commands")
+    cache_count = _count_table(db_path, "suggestions_cache")
+    zsh_blocks = _managed_block_count(Path.home() / ".zshrc")
+    bash_blocks = _managed_block_count(Path.home() / ".bashrc")
+
+    print(f"daemon reachable: {'yes' if socket_ok or http_ok else 'no'}")
+    print(f"IPC mode: {mode}")
+    print(f"socket path: {socket_path}")
+    print(f"socket status: {socket_msg}")
+    print(f"HTTP URL: {http_url}")
+    print(f"HTTP status: {http_msg}")
+    print(f"DB path: {db_path}")
+    print(f"DB exists: {'yes' if Path(db_path).exists() else 'no'}")
+    print(f"command count: {command_count if command_count is not None else 'unknown'}")
+    print(f"cache count: {cache_count if cache_count is not None else 'unknown'}")
+    print(f"AI enabled: {'yes' if settings.ai.enabled else 'no'}")
+    print(f"protocol version: {PROTOCOL_VERSION}")
+    print(f"shell integration: zsh blocks={zsh_blocks}, bash blocks={bash_blocks}")
+    return 0
+
+
+def _doctor_line(kind: str, message: str) -> tuple[str, bool]:
+    print(f"{kind}: {message}")
+    return message, kind == "FAIL"
+
+
+def doctor(args: argparse.Namespace) -> int:
+    settings = load_settings(args.config_dir)
+    failures = 0
+
+    _, failed = _doctor_line("PASS", "Python package import works")
+    failures += int(failed)
+
+    db_path = Path(settings.daemon.db_path).expanduser()
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("PRAGMA user_version")
+        _, failed = _doctor_line("PASS", f"DB writable: {db_path}")
+    except Exception as exc:
+        _, failed = _doctor_line("FAIL", f"DB is not writable: {db_path} ({exc})")
+    failures += int(failed)
+
+    socket_path = Path(_default_socket_path(settings)).expanduser()
+    try:
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        _, failed = _doctor_line("PASS", f"socket directory writable: {socket_path.parent}")
+    except Exception as exc:
+        _, failed = _doctor_line("FAIL", f"socket directory is not writable: {socket_path.parent} ({exc})")
+    failures += int(failed)
+
+    socket_ok, socket_msg = _socket_status(str(socket_path))
+    if socket_ok:
+        _doctor_line("PASS", f"daemon reachable over Unix socket: {socket_path}")
+    elif socket_path.exists():
+        try:
+            socket_mode = socket_path.stat().st_mode
+            kind = "FAIL" if not stat.S_ISSOCK(socket_mode) else "WARN"
+        except OSError:
+            kind = "WARN"
+        _, failed = _doctor_line(kind, f"Unix socket {socket_msg}: {socket_path}")
+        failures += int(failed)
+    else:
+        _doctor_line("WARN", f"daemon socket is not present: {socket_path}")
+
+    http_url = _http_url(settings)
+    http_ok, http_msg = _http_status(http_url)
+    _doctor_line("PASS" if http_ok else "WARN", f"HTTP fallback {http_msg}: {http_url}")
+
+    for shell in SUPPORTED_SHELLS:
+        plugin = _shell_plugin_path(shell)
+        _, failed = _doctor_line("PASS" if plugin.exists() else "FAIL", f"{shell} plugin file: {plugin}")
+        failures += int(failed)
+
+    zsh_bin = shutil.which("zsh")
+    if zsh_bin:
+        proc = subprocess.run([zsh_bin, "-n", str(_shell_plugin_path("zsh"))], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode == 0:
+            _doctor_line("PASS", "zsh syntax check passed")
         else:
-            print(f"already configured {target}")
+            _, failed = _doctor_line("FAIL", f"zsh syntax check failed: {proc.stderr.strip()}")
+            failures += int(failed)
+    else:
+        _doctor_line("WARN", "zsh is not installed; skipped zsh syntax check")
+
+    autosuggest_paths = [
+        Path.home() / ".oh-my-zsh/custom/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh",
+        Path.home() / ".zsh/zsh-autosuggestions/zsh-autosuggestions.zsh",
+        Path("/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh"),
+        Path("/usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh"),
+    ]
+    if any(path.exists() for path in autosuggest_paths):
+        _doctor_line("PASS", "zsh-autosuggestions appears to be installed")
+    else:
+        _doctor_line("WARN", "zsh-autosuggestions not found in common locations")
+
+    for shell in SUPPORTED_SHELLS:
+        rc = _rc_path(shell)
+        count = _managed_block_count(rc)
+        if count == 1:
+            _doctor_line("PASS", f"{rc} contains one managed install block")
+        elif count > 1:
+            _doctor_line("WARN", f"{rc} contains duplicate managed install blocks; rerun install --shell {shell}")
+        elif _legacy_integration_present(rc):
+            _doctor_line("WARN", f"{rc} has legacy terminal-copilot lines without managed markers")
+        else:
+            _doctor_line("WARN", f"{rc} has no managed install block")
+
+    config_root = Path(args.config_dir) if args.config_dir else _project_root() / "config"
+    for name in ("defaults.yaml", "rules.yaml", "providers.yaml"):
+        path = config_root / name
+        _doctor_line("PASS" if path.exists() else "WARN", f"config file {'exists' if path.exists() else 'not found, defaults may apply'}: {path}")
+
+    return 1 if failures else 0
+
+
+def install(args: argparse.Namespace) -> int:
+    settings = load_settings(args.config_dir)
+    if args.root and args.user:
+        print("choose either --user or --root", file=sys.stderr)
+        return 2
+    if args.root and not args.socket and not os.getenv("TERM_COPILOT_SOCKET"):
+        print("install --root requires --socket or TERM_COPILOT_SOCKET", file=sys.stderr)
+        return 2
+    socket_path = args.socket or _default_socket_path(settings)
+    for shell in _shells_from_arg(args.shell):
+        target, action = install_shell(shell, socket_path=socket_path, root=args.root)
+        print(f"{shell}: {action}: {target}")
+    return 0
+
+
+def uninstall(args: argparse.Namespace) -> int:
+    for shell in _shells_from_arg(args.shell):
+        target, action = uninstall_shell(shell, root=args.root)
+        print(f"{shell}: {action}: {target}")
     return 0
 
 
@@ -147,10 +506,23 @@ def main(argv: list[str] | None = None) -> int:
     p_event.add_argument("--duration-ms", type=int, default=None)
     p_event.set_defaults(func=event)
 
+    p_status = sub.add_parser("status")
+    p_status.set_defaults(func=status)
+
+    p_doctor = sub.add_parser("doctor")
+    p_doctor.set_defaults(func=doctor)
+
     p_install = sub.add_parser("install")
+    p_install.add_argument("--user", action="store_true")
     p_install.add_argument("--root", action="store_true")
+    p_install.add_argument("--shell", choices=["zsh", "bash", "all"], default="all")
     p_install.add_argument("--socket", default=None)
     p_install.set_defaults(func=install)
+
+    p_uninstall = sub.add_parser("uninstall")
+    p_uninstall.add_argument("--root", action="store_true")
+    p_uninstall.add_argument("--shell", choices=["zsh", "bash", "all"], default="all")
+    p_uninstall.set_defaults(func=uninstall)
 
     args = parser.parse_args(argv)
     return args.func(args)
