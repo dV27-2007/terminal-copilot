@@ -467,6 +467,19 @@ def test_powershell_adapter_prefers_pipe_before_http():
     assert "\\\\.\\pipe" in text
 
 
+def test_powershell_events_use_pipe_before_http_fallback():
+    text = read_plugin(POWERSHELL_PLUGIN)
+
+    assert 'Invoke-TermCopilotJsonPost -Endpoint "/events" -Payload $payload' in text
+    pipe_function = text[text.index("function Invoke-TermCopilotPipeJsonPost") : text.index("function Invoke-TermCopilotJsonPost")]
+    assert '$Endpoint -ne "/predict" -and $Endpoint -ne "/events"' in pipe_function
+
+    post_function = text[text.index("function Invoke-TermCopilotJsonPost") :]
+    assert post_function.index("Invoke-TermCopilotPipeJsonPost -Endpoint $Endpoint -Payload $Payload") < post_function.index("Invoke-RestMethod")
+    assert "Get-TermCopilotHttpUrl -RequireExplicit:$requireExplicit" in post_function
+    assert '$Endpoint -ne "/events" -or ([bool]$pipeResponse.ok)' in post_function
+
+
 def test_powershell_adapter_admin_mode_requires_explicit_endpoint():
     text = read_plugin(POWERSHELL_PLUGIN)
 
@@ -476,6 +489,9 @@ def test_powershell_adapter_admin_mode_requires_explicit_endpoint():
     assert 'if ($RequireExplicit)' in text
     assert "TERM_COPILOT_PIPE" in text
     assert "TERM_COPILOT_HTTP_URL" in text
+    post_function = text[text.index("function Invoke-TermCopilotJsonPost") :]
+    assert "Get-TermCopilotHttpUrl -RequireExplicit:$requireExplicit" in post_function
+    assert "Get-TermCopilotPipeName -RequireExplicit:$requireExplicit" in text
 
 
 def test_powershell_adapter_has_admin_and_payload_metadata():
@@ -495,9 +511,23 @@ def test_powershell_adapter_emits_only_accepted_event():
 
     assert "Send-TermCopilotAcceptedEvent" in text
     assert 'event = "suggestion_accepted"' in text
+    assert "protocol_version = 1" in text
+    assert "full_command = $Suggestion" in text
+    assert "shell_version = $shellMetadata.Version" in text
+    assert "shell_edition = $shellMetadata.Edition" in text
     assert 'Invoke-TermCopilotJsonPost -Endpoint "/events"' in text
     assert "suggestion_ignored" not in text
     assert "command_executed" not in text
+
+
+def test_powershell_adapter_emits_accept_event_only_after_insert():
+    text = read_plugin(POWERSHELL_PLUGIN)
+
+    suggestion_function = text[text.index("function Invoke-TermCopilotSuggestion") : text.index("function Register-TermCopilotKeyBinding")]
+    assert suggestion_function.index(
+        'if ($null -eq $suggestion -or [string]::IsNullOrEmpty($suggestion.Suffix))'
+    ) < suggestion_function.index("PSConsoleReadLine]::Insert")
+    assert suggestion_function.index("PSConsoleReadLine]::Insert") < suggestion_function.index("Send-TermCopilotAcceptedEvent")
 
 
 def test_powershell_adapter_catches_request_errors():

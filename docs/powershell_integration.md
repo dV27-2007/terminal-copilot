@@ -52,8 +52,8 @@ until explicit insertion is stable on Windows PowerShell 5.1 and PowerShell 7+.
 
 ## Transport
 
-The adapter prefers Windows Named Pipe prediction transport when a pipe name is
-available:
+The adapter prefers Windows Named Pipe transport for prediction and accepted
+events when a pipe name is available:
 
 ```text
 TERM_COPILOT_PIPE, or \\.\pipe\term-copilot-<user> for normal non-admin shells
@@ -68,8 +68,8 @@ TERM_COPILOT_HTTP_URL, or http://127.0.0.1:8765 by default
 `TERM_COPILOT_URL` is also accepted for compatibility with the other adapters.
 Requests use a short timeout and fail silently when the daemon is unavailable.
 
-Named Pipe IPC is prediction-only in this stage. `suggestion_accepted` events
-remain best-effort HTTP posts. The adapter does not use external dependencies,
+`suggestion_accepted` uses the same transport order: Named Pipe first, then
+HTTP fallback when allowed. The adapter does not use external dependencies,
 PowerShell modules, `socat`, `nc`, or provider APIs.
 
 ## Profile Path
@@ -120,11 +120,15 @@ PowerShell is a warning, not a failure.
 ## Events
 
 The adapter emits `suggestion_accepted` only after it inserts a suggestion.
-Event posting is best-effort and silent on failure.
+Event posting uses Named Pipe first and local HTTP fallback when allowed. It is
+best-effort and silent on failure.
 
 `command_executed` and `suggestion_ignored` are not implemented in the
-PowerShell MVP. They should be added only when the adapter can capture them
-without false positives.
+PowerShell MVP. `command_executed` remains deferred because this adapter does
+not yet have a post-execution hook that reliably pairs the exact submitted
+command with exit status without emitting on prompt redraws or partial state.
+`suggestion_ignored` remains deferred because explicit `Ctrl+F` insertion has
+no stable ignored-suggestion lifecycle yet.
 
 ## Windows Terminal And WSL
 

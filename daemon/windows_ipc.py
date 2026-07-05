@@ -8,7 +8,13 @@ import threading
 from multiprocessing.connection import Client, Connection, Listener
 from typing import Any
 
-from .ipc import MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, REQUEST_TIMEOUT_SECONDS, predict_from_payload
+from .ipc import (
+    MAX_REQUEST_BYTES,
+    MAX_RESPONSE_BYTES,
+    PROTOCOL_VERSION,
+    REQUEST_TIMEOUT_SECONDS,
+    predict_from_payload,
+)
 from .models import empty_suggestion
 from .predictor import Predictor
 
@@ -77,6 +83,44 @@ def _decode_request(raw: bytes) -> Any:
     return json.loads(raw.decode("utf-8"))
 
 
+def _event_response(ok: bool, reason: str | None = None) -> dict[str, Any]:
+    response: dict[str, Any] = {"ok": ok}
+    if reason:
+        response["reason"] = reason
+    return response
+
+
+def event_from_payload(predictor: Predictor, payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return _event_response(False, "request must be a JSON object")
+
+    version = payload.get("protocol_version", PROTOCOL_VERSION)
+    if version != PROTOCOL_VERSION:
+        return _event_response(False, "unsupported protocol_version")
+
+    event = payload.get("event")
+    if not isinstance(event, str):
+        return _event_response(False, "event must be a string")
+
+    if event == "suggestion_accepted":
+        suggestion = payload.get("suggestion") or payload.get("full_command")
+        if not isinstance(suggestion, str) or not suggestion.strip():
+            return _event_response(False, "suggestion_accepted requires suggestion")
+        try:
+            predictor.mark_suggestion(suggestion, accepted=True)
+        except Exception:
+            return _event_response(False, "event failed")
+        return _event_response(True)
+
+    return _event_response(False, "unsupported event")
+
+
+def pipe_response_from_payload(predictor: Predictor, payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict) and "event" in payload:
+        return event_from_payload(predictor, payload)
+    return predict_from_payload(predictor, payload)
+
+
 class WindowsNamedPipePredictionServer:
     def __init__(
         self,
@@ -139,7 +183,7 @@ class WindowsNamedPipePredictionServer:
             else:
                 raw = conn.recv_bytes(maxlength=self.max_request_bytes + 1)
                 payload = _decode_request(raw)
-                response = predict_from_payload(self.predictor, payload)
+                response = pipe_response_from_payload(self.predictor, payload)
         except (json.JSONDecodeError, UnicodeDecodeError):
             response = _error_response("invalid json")
         except OSError:
@@ -159,7 +203,7 @@ class WindowsNamedPipePredictionServer:
             conn.close()
 
 
-def request_prediction_pipe(
+def request_pipe(
     pipe_name: str,
     payload: dict[str, Any],
     *,
@@ -182,3 +226,13 @@ def request_prediction_pipe(
         return json.loads(raw.decode("utf-8"))
     finally:
         conn.close()
+
+
+def request_prediction_pipe(
+    pipe_name: str,
+    payload: dict[str, Any],
+    *,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+    max_response_bytes: int = MAX_RESPONSE_BYTES,
+) -> dict[str, Any]:
+    return request_pipe(pipe_name, payload, timeout=timeout, max_response_bytes=max_response_bytes)

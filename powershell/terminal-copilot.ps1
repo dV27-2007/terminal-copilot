@@ -144,13 +144,7 @@ function Get-TermCopilotCurrentDirectory {
     }
 }
 
-function New-TermCopilotPredictionPayload {
-    param(
-        [Parameter(Mandatory = $true)][string]$Buffer,
-        [Parameter(Mandatory = $true)][int]$Cursor
-    )
-
-    $rootMode = [bool](Test-TermCopilotAdmin)
+function Get-TermCopilotShellMetadata {
     $version = $null
     $edition = $null
     try {
@@ -160,6 +154,21 @@ function New-TermCopilotPredictionPayload {
         $version = $null
         $edition = $null
     }
+
+    [pscustomobject]@{
+        Version = $version
+        Edition = $edition
+    }
+}
+
+function New-TermCopilotPredictionPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Buffer,
+        [Parameter(Mandatory = $true)][int]$Cursor
+    )
+
+    $rootMode = [bool](Test-TermCopilotAdmin)
+    $shellMetadata = Get-TermCopilotShellMetadata
 
     [ordered]@{
         protocol_version = 1
@@ -173,8 +182,8 @@ function New-TermCopilotPredictionPayload {
         term_copilot_home = $env:TERM_COPILOT_HOME
         root_mode = $rootMode
         admin = $rootMode
-        shell_version = $version
-        shell_edition = $edition
+        shell_version = $shellMetadata.Version
+        shell_edition = $shellMetadata.Edition
     }
 }
 
@@ -184,7 +193,7 @@ function Invoke-TermCopilotPipeJsonPost {
         [Parameter(Mandatory = $true)]$Payload
     )
 
-    if ($Endpoint -ne "/predict") {
+    if ($Endpoint -ne "/predict" -and $Endpoint -ne "/events") {
         return $null
     }
 
@@ -259,7 +268,9 @@ function Invoke-TermCopilotJsonPost {
     try {
         $pipeResponse = Invoke-TermCopilotPipeJsonPost -Endpoint $Endpoint -Payload $Payload
         if ($null -ne $pipeResponse) {
-            return $pipeResponse
+            if ($Endpoint -ne "/events" -or ([bool]$pipeResponse.ok)) {
+                return $pipeResponse
+            }
         }
 
         $requireExplicit = $false
@@ -366,9 +377,12 @@ function Send-TermCopilotAcceptedEvent {
 
     try {
         $rootMode = [bool](Test-TermCopilotAdmin)
+        $shellMetadata = Get-TermCopilotShellMetadata
         $payload = [ordered]@{
+            protocol_version = 1
             event = "suggestion_accepted"
             suggestion = $Suggestion
+            full_command = $Suggestion
             source = $Source
             buffer = $Buffer
             cwd = (Get-TermCopilotCurrentDirectory)
@@ -378,6 +392,8 @@ function Send-TermCopilotAcceptedEvent {
             user = (Get-TermCopilotUserName)
             original_user = $(if ($env:TERM_COPILOT_USER) { $env:TERM_COPILOT_USER } else { Get-TermCopilotUserName })
             term_copilot_home = $env:TERM_COPILOT_HOME
+            shell_version = $shellMetadata.Version
+            shell_edition = $shellMetadata.Edition
         }
         $null = Invoke-TermCopilotJsonPost -Endpoint "/events" -Payload $payload
     } catch {
