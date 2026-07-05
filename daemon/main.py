@@ -27,6 +27,17 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 MANAGED_START = "# >>> term-copilot init >>>"
 MANAGED_END = "# <<< term-copilot init <<<"
 SUPPORTED_SHELLS = ("zsh", "bash", "fish")
+POWERSHELL_SHELL = "powershell"
+SHELL_CHOICES = (*SUPPORTED_SHELLS, POWERSHELL_SHELL)
+DEFAULT_POWERSHELL_PROFILE_TARGET = "current-user-current-host"
+POWERSHELL_PROFILE_TARGETS = {
+    "current-user-current-host": ("PowerShell", "Microsoft.PowerShell_profile.ps1"),
+    "current-user-all-hosts": ("PowerShell", "profile.ps1"),
+    "powershell-7-current-user-current-host": ("PowerShell", "Microsoft.PowerShell_profile.ps1"),
+    "powershell-7-current-user-all-hosts": ("PowerShell", "profile.ps1"),
+    "windows-powershell-5.1-current-user-current-host": ("WindowsPowerShell", "Microsoft.PowerShell_profile.ps1"),
+    "windows-powershell-5.1-current-user-all-hosts": ("WindowsPowerShell", "profile.ps1"),
+}
 
 
 def start_ipc_server(args: argparse.Namespace, settings) -> UnixSocketPredictionServer | None:
@@ -104,7 +115,7 @@ def event(args: argparse.Namespace) -> int:
 def _shells_from_arg(value: str) -> list[str]:
     if value == "all":
         return list(SUPPORTED_SHELLS)
-    if value in SUPPORTED_SHELLS:
+    if value in SHELL_CHOICES:
         return [value]
     raise ValueError(f"unsupported shell: {value}")
 
@@ -121,10 +132,33 @@ def _shell_plugin_path(shell: str) -> Path:
         return root / "bash" / "terminal-copilot.bash"
     if shell == "fish":
         return root / "fish" / "terminal-copilot.fish"
+    if shell == POWERSHELL_SHELL:
+        return root / "powershell" / "terminal-copilot.ps1"
     raise ValueError(f"unsupported shell: {shell}")
 
 
+def _powershell_profile_path(
+    target: str | None = None,
+    *,
+    profile_override: str | Path | None = None,
+    home: Path | None = None,
+) -> Path:
+    override = profile_override if profile_override is not None else os.getenv("TERM_COPILOT_POWERSHELL_PROFILE")
+    if override:
+        return Path(override).expanduser()
+
+    target_name = target or os.getenv("TERM_COPILOT_POWERSHELL_PROFILE_TARGET") or DEFAULT_POWERSHELL_PROFILE_TARGET
+    try:
+        directory_name, file_name = POWERSHELL_PROFILE_TARGETS[target_name]
+    except KeyError as exc:
+        supported = ", ".join(sorted(POWERSHELL_PROFILE_TARGETS))
+        raise ValueError(f"unsupported PowerShell profile target: {target_name}; expected one of: {supported}") from exc
+    return (home or Path.home()) / "Documents" / directory_name / file_name
+
+
 def _rc_path(shell: str, *, root: bool = False) -> Path:
+    if shell == POWERSHELL_SHELL:
+        return _powershell_profile_path()
     if shell == "fish":
         return Path("/root/.config/fish/config.fish") if root else Path.home() / ".config" / "fish" / "config.fish"
     if root:
@@ -141,6 +175,11 @@ def _sh_quote(value: str | Path) -> str:
 def _fish_quote(value: str | Path) -> str:
     text = str(value)
     return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def _powershell_quote(value: str | Path) -> str:
+    text = str(value)
+    return "'" + text.replace("'", "''") + "'"
 
 
 def _default_socket_path(settings) -> str:
@@ -180,6 +219,10 @@ def _managed_block(shell: str, *, socket_path: str, root: bool = False) -> str:
         else:
             lines.append(f"set -q TERM_COPILOT_SOCKET; or set -gx TERM_COPILOT_SOCKET {_fish_quote(socket_path)}")
         lines.append(f"test -f {_fish_quote(plugin)}; and source {_fish_quote(plugin)}")
+    elif shell == POWERSHELL_SHELL:
+        lines.append("# PowerShell runtime adapter is staged; this guard is a no-op until it exists.")
+        lines.append(f"$TermCopilotAdapter = {_powershell_quote(plugin)}")
+        lines.append("if (Test-Path -LiteralPath $TermCopilotAdapter) { . $TermCopilotAdapter }")
     else:
         if root:
             user, home = _root_session_values()
@@ -399,6 +442,8 @@ def status(args: argparse.Namespace) -> int:
     zsh_blocks = _managed_block_count(Path.home() / ".zshrc")
     bash_blocks = _managed_block_count(Path.home() / ".bashrc")
     fish_blocks = _managed_block_count(Path.home() / ".config" / "fish" / "config.fish")
+    powershell_profile = _powershell_profile_path()
+    powershell_blocks = _managed_block_count(powershell_profile)
 
     print(f"daemon reachable: {'yes' if socket_ok or http_ok else 'no'}")
     print(f"IPC mode: {mode}")
@@ -412,7 +457,13 @@ def status(args: argparse.Namespace) -> int:
     print(f"cache count: {cache_count if cache_count is not None else 'unknown'}")
     print(f"AI enabled: {'yes' if settings.ai.enabled else 'no'}")
     print(f"protocol version: {PROTOCOL_VERSION}")
-    print(f"shell integration: zsh blocks={zsh_blocks}, bash blocks={bash_blocks}, fish blocks={fish_blocks}")
+    print(
+        "shell integration: "
+        f"zsh blocks={zsh_blocks}, bash blocks={bash_blocks}, "
+        f"fish blocks={fish_blocks}, powershell blocks={powershell_blocks}"
+    )
+    print(f"PowerShell profile path: {powershell_profile}")
+    print(f"PowerShell profile exists: {'yes' if powershell_profile.exists() else 'no'}")
     return 0
 
 
@@ -485,6 +536,9 @@ def doctor(args: argparse.Namespace) -> int:
         _, failed = _doctor_line("PASS" if plugin.exists() else "FAIL", f"{shell} plugin file: {plugin}")
         failures += int(failed)
 
+    powershell_adapter = _shell_plugin_path(POWERSHELL_SHELL)
+    _doctor_line("PASS" if powershell_adapter.exists() else "WARN", f"PowerShell adapter file: {powershell_adapter}")
+
     zsh_bin = shutil.which("zsh")
     if zsh_bin:
         proc = subprocess.run([zsh_bin, "-n", str(_shell_plugin_path("zsh"))], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
@@ -518,6 +572,14 @@ def doctor(args: argparse.Namespace) -> int:
     else:
         _doctor_line("WARN", "fish is not installed; skipped fish syntax check")
 
+    pwsh_bin = shutil.which("pwsh")
+    powershell_bin = shutil.which("powershell.exe") or shutil.which("powershell")
+    if pwsh_bin or powershell_bin:
+        available = ", ".join(path for path in (pwsh_bin, powershell_bin) if path)
+        _doctor_line("PASS", f"PowerShell executable available: {available}")
+    else:
+        _doctor_line("WARN", "PowerShell executable not found; skipped PowerShell syntax check")
+
     autosuggest_paths = [
         Path.home() / ".oh-my-zsh/custom/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh",
         Path.home() / ".zsh/zsh-autosuggestions/zsh-autosuggestions.zsh",
@@ -541,6 +603,21 @@ def doctor(args: argparse.Namespace) -> int:
             _doctor_line("WARN", f"{rc} has legacy terminal-copilot lines without managed markers")
         else:
             _doctor_line("WARN", f"{rc} has no managed install block")
+
+    powershell_profile = _powershell_profile_path()
+    powershell_count = _managed_block_count(powershell_profile)
+    _doctor_line(
+        "PASS" if powershell_profile.exists() else "WARN",
+        f"PowerShell profile {'exists' if powershell_profile.exists() else 'does not exist'}: {powershell_profile}",
+    )
+    if powershell_count == 1:
+        _doctor_line("PASS", f"{powershell_profile} contains one managed install block")
+    elif powershell_count > 1:
+        _doctor_line("WARN", f"{powershell_profile} contains duplicate managed install blocks; rerun install --shell powershell")
+    elif _legacy_integration_present(powershell_profile):
+        _doctor_line("WARN", f"{powershell_profile} has legacy terminal-copilot lines without managed markers")
+    else:
+        _doctor_line("WARN", f"{powershell_profile} has no managed install block")
 
     config_root = Path(args.config_dir) if args.config_dir else _project_root() / "config"
     for name in ("defaults.yaml", "rules.yaml", "providers.yaml"):
@@ -619,13 +696,13 @@ def main(argv: list[str] | None = None) -> int:
     p_install = sub.add_parser("install")
     p_install.add_argument("--user", action="store_true")
     p_install.add_argument("--root", action="store_true")
-    p_install.add_argument("--shell", choices=["zsh", "bash", "fish", "all"], default="all")
+    p_install.add_argument("--shell", choices=["zsh", "bash", "fish", "powershell", "all"], default="all")
     p_install.add_argument("--socket", default=None)
     p_install.set_defaults(func=install)
 
     p_uninstall = sub.add_parser("uninstall")
     p_uninstall.add_argument("--root", action="store_true")
-    p_uninstall.add_argument("--shell", choices=["zsh", "bash", "fish", "all"], default="all")
+    p_uninstall.add_argument("--shell", choices=["zsh", "bash", "fish", "powershell", "all"], default="all")
     p_uninstall.set_defaults(func=uninstall)
 
     args = parser.parse_args(argv)

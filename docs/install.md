@@ -85,6 +85,28 @@ For normal user shells, fish uses the same default socket path as zsh,
 set. In root mode it requires an explicit `TERM_COPILOT_SOCKET` and does not use
 HTTP fallback.
 
+## Install PowerShell Profile Block
+
+```bash
+./venv/bin/python -m daemon.main install --shell powershell
+```
+
+PowerShell support is staged. This command manages the profile block only; it
+does not install a runtime adapter, bind keys, add Named Pipe IPC, or enable
+ghost text. The block safely checks for the future adapter path before
+dot-sourcing it, so a missing adapter is silent.
+
+By default the checked profile target is the current-user current-host
+PowerShell 7 style path:
+
+```text
+~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1
+```
+
+Use `TERM_COPILOT_POWERSHELL_PROFILE` to point install, uninstall, status and
+doctor at a specific profile file. `--shell all` does not include PowerShell;
+use `--shell powershell` explicitly.
+
 ## Status
 
 ```bash
@@ -101,6 +123,7 @@ Status prints local state quickly and does not fail when the daemon is stopped:
 - AI enabled/disabled;
 - protocol version;
 - managed shell block counts.
+- PowerShell profile path, existence, and managed block count.
 
 ## Doctor
 
@@ -116,6 +139,8 @@ Doctor prints `PASS`, `WARN`, and `FAIL` checks for local setup:
 - HTTP fallback reachability;
 - plugin file presence;
 - zsh, bash and fish syntax checks when those shells are available;
+- PowerShell profile and future adapter visibility without requiring PowerShell
+  to be installed;
 - common `zsh-autosuggestions` install locations;
 - managed rc blocks and duplicate managed blocks;
 - config files.
@@ -137,6 +162,7 @@ missing plugin file.
 ./venv/bin/python -m daemon.main uninstall --shell zsh
 ./venv/bin/python -m daemon.main uninstall --shell bash
 ./venv/bin/python -m daemon.main uninstall --shell fish
+./venv/bin/python -m daemon.main uninstall --shell powershell
 ```
 
 Uninstall removes only blocks between the managed markers. It preserves all other

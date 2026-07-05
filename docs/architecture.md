@@ -30,6 +30,8 @@ The shell integration is not the brain. It only captures the current buffer, cwd
 - `zsh/terminal-copilot.zsh`: zsh autosuggestion strategy.
 - `bash/terminal-copilot.bash`: bash fallback.
 - `fish/terminal-copilot.fish`: fish Ctrl+F fallback.
+- PowerShell support is staged: install/status/doctor can manage a guarded
+  profile block, but the runtime adapter is not implemented yet.
 
 ## CLI Tooling
 
@@ -54,9 +56,9 @@ Install blocks are delimited with exact markers:
 ```
 
 Install is idempotent, uses absolute plugin paths, and creates backups before
-modifying existing rc files. Uninstall removes only managed blocks and does not
-delete history/cache data. Status and doctor are local-only and do not enable AI
-or contact external services.
+modifying existing rc/profile files. Uninstall removes only managed blocks and
+does not delete history/cache data. Status and doctor are local-only and do not
+enable AI or contact external services.
 
 ## Benchmarks
 
@@ -104,6 +106,12 @@ request and records accepted/executed events through a silent background event
 helper. Bash and fish remain fallback adapters: they record command execution
 and offer a `Ctrl+F` prediction accept helper, but they do not render native
 zsh-style ghost text.
+
+PowerShell profile management is available as preparation for a future adapter.
+`install --shell powershell` writes a guarded profile block that dot-sources
+`powershell/terminal-copilot.ps1` only if that file exists. Because the adapter
+is not implemented in this stage, the block binds no keys, sends no requests,
+and has no runtime effect.
 
 ## Root And Session Context
 

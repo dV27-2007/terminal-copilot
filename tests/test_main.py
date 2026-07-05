@@ -1,7 +1,14 @@
 from pathlib import Path
 
 from daemon.history_store import HistoryStore
-from daemon.main import MANAGED_END, MANAGED_START, _managed_block, main
+from daemon.main import (
+    MANAGED_END,
+    MANAGED_START,
+    _managed_block,
+    _powershell_profile_path,
+    _shells_from_arg,
+    main,
+)
 
 
 def configure_temp_home(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
@@ -67,6 +74,20 @@ def test_status_reports_fish_managed_blocks(tmp_path: Path, monkeypatch, capsys)
     assert (home / ".config" / "fish" / "config.fish").exists()
 
 
+def test_status_reports_powershell_profile_facts(tmp_path: Path, monkeypatch, capsys):
+    configure_temp_home(tmp_path, monkeypatch)
+    profile = tmp_path / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
+    monkeypatch.setenv("TERM_COPILOT_POWERSHELL_PROFILE", str(profile))
+
+    assert main(["install", "--shell", "powershell"]) == 0
+    assert main(["status"]) == 0
+
+    output = capsys.readouterr().out
+    assert f"PowerShell profile path: {profile}" in output
+    assert "PowerShell profile exists: yes" in output
+    assert "powershell blocks=1" in output
+
+
 def test_doctor_handles_missing_daemon_without_crashing(tmp_path: Path, monkeypatch, capsys):
     configure_temp_home(tmp_path, monkeypatch)
 
@@ -79,6 +100,19 @@ def test_doctor_handles_missing_daemon_without_crashing(tmp_path: Path, monkeypa
     assert "TERM_COPILOT_SOCKET set: yes" in output
     assert "WARN: daemon socket is not present" in output
     assert "HTTP fallback unreachable" in output
+
+
+def test_doctor_reports_powershell_profile_without_requiring_powershell(tmp_path: Path, monkeypatch, capsys):
+    configure_temp_home(tmp_path, monkeypatch)
+    profile = tmp_path / "PowerShell" / "profile.ps1"
+    monkeypatch.setenv("TERM_COPILOT_POWERSHELL_PROFILE", str(profile))
+
+    assert main(["doctor"]) == 0
+
+    output = capsys.readouterr().out
+    assert f"PowerShell profile does not exist: {profile}" in output
+    assert "PowerShell adapter file:" in output
+    assert "PowerShell executable" in output
 
 
 def test_install_zsh_managed_block_is_idempotent_and_backed_up(tmp_path: Path, monkeypatch):
@@ -115,6 +149,64 @@ def test_install_fish_managed_block_is_idempotent_and_backed_up(tmp_path: Path, 
     assert list(fish_config.parent.glob("config.fish.term-copilot.bak*"))
 
 
+def test_powershell_profile_path_supports_override_and_targets(tmp_path: Path, monkeypatch):
+    override = tmp_path / "custom" / "profile.ps1"
+    monkeypatch.setenv("TERM_COPILOT_POWERSHELL_PROFILE", str(override))
+
+    assert _powershell_profile_path() == override
+
+    monkeypatch.delenv("TERM_COPILOT_POWERSHELL_PROFILE")
+    home = tmp_path / "home"
+    assert _powershell_profile_path("current-user-current-host", home=home) == (
+        home / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
+    )
+    assert _powershell_profile_path("current-user-all-hosts", home=home) == (
+        home / "Documents" / "PowerShell" / "profile.ps1"
+    )
+
+
+def test_powershell_managed_block_is_safe_placeholder():
+    block = _managed_block("powershell", socket_path="/tmp/unused.sock")
+
+    assert MANAGED_START in block
+    assert MANAGED_END in block
+    assert "$TermCopilotAdapter =" in block
+    assert "Test-Path -LiteralPath $TermCopilotAdapter" in block
+    assert "terminal-copilot.ps1" in block
+    assert "Set-PSReadLineKeyHandler" not in block
+    assert "Invoke-Expression" not in block
+
+
+def test_install_powershell_creates_profile_and_is_idempotent(tmp_path: Path, monkeypatch):
+    configure_temp_home(tmp_path, monkeypatch)
+    profile = tmp_path / "nested" / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
+    monkeypatch.setenv("TERM_COPILOT_POWERSHELL_PROFILE", str(profile))
+
+    assert main(["install", "--shell", "powershell"]) == 0
+    assert profile.exists()
+    assert main(["install", "--shell", "powershell"]) == 0
+
+    text = profile.read_text()
+    assert text.count(MANAGED_START) == 1
+    assert text.count(MANAGED_END) == 1
+    assert "$TermCopilotAdapter =" in text
+
+
+def test_install_powershell_preserves_content_and_creates_backup(tmp_path: Path, monkeypatch):
+    configure_temp_home(tmp_path, monkeypatch)
+    profile = tmp_path / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("Set-Alias ll Get-ChildItem\n")
+    monkeypatch.setenv("TERM_COPILOT_POWERSHELL_PROFILE", str(profile))
+
+    assert main(["install", "--shell", "powershell"]) == 0
+
+    text = profile.read_text()
+    assert "Set-Alias ll Get-ChildItem" in text
+    assert text.count(MANAGED_START) == 1
+    assert list(profile.parent.glob("Microsoft.PowerShell_profile.ps1.term-copilot.bak*"))
+
+
 def test_uninstall_removes_only_managed_block(tmp_path: Path, monkeypatch):
     home, _, _ = configure_temp_home(tmp_path, monkeypatch)
     zshrc = home / ".zshrc"
@@ -142,6 +234,42 @@ def test_uninstall_fish_removes_only_managed_block(tmp_path: Path, monkeypatch):
     assert MANAGED_START not in text
     assert MANAGED_END not in text
     assert "set -gx KEEP_ME 1" in text
+
+
+def test_uninstall_powershell_removes_only_managed_block(tmp_path: Path, monkeypatch):
+    configure_temp_home(tmp_path, monkeypatch)
+    profile = tmp_path / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("Set-Alias gs Get-ChildItem\n")
+    monkeypatch.setenv("TERM_COPILOT_POWERSHELL_PROFILE", str(profile))
+
+    assert main(["install", "--shell", "powershell"]) == 0
+    assert main(["uninstall", "--shell", "powershell"]) == 0
+
+    text = profile.read_text()
+    assert MANAGED_START not in text
+    assert MANAGED_END not in text
+    assert "Set-Alias gs Get-ChildItem" in text
+
+
+def test_uninstall_powershell_is_idempotent_when_profile_missing(tmp_path: Path, monkeypatch):
+    configure_temp_home(tmp_path, monkeypatch)
+    profile = tmp_path / "missing" / "profile.ps1"
+    monkeypatch.setenv("TERM_COPILOT_POWERSHELL_PROFILE", str(profile))
+
+    assert main(["uninstall", "--shell", "powershell"]) == 0
+    assert not profile.exists()
+
+
+def test_shell_all_excludes_powershell_profile(tmp_path: Path, monkeypatch):
+    configure_temp_home(tmp_path, monkeypatch)
+    profile = tmp_path / "PowerShell" / "profile.ps1"
+    monkeypatch.setenv("TERM_COPILOT_POWERSHELL_PROFILE", str(profile))
+
+    assert _shells_from_arg("all") == ["zsh", "bash", "fish"]
+    assert main(["install", "--shell", "all"]) == 0
+
+    assert not profile.exists()
 
 
 def test_install_collapses_duplicate_managed_blocks_safely(tmp_path: Path, monkeypatch):
