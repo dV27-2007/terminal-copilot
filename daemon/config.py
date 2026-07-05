@@ -61,6 +61,8 @@ class AISettings:
     timeout_ms: int = 1500
     max_input_chars: int = 2000
     max_recent_commands: int = 10
+    backoff_seconds: float = 5.0
+    max_in_flight: int = 2
 
 
 @dataclass(slots=True)
@@ -118,6 +120,10 @@ def load_settings(config_dir: str | Path | None = None) -> Settings:
                 settings.ai.timeout_ms = int(selected["timeout_ms"])
             if isinstance(selected.get("max_input_chars"), int):
                 settings.ai.max_input_chars = int(selected["max_input_chars"])
+            if isinstance(selected.get("backoff_seconds"), (int, float)):
+                settings.ai.backoff_seconds = float(selected["backoff_seconds"])
+            if isinstance(selected.get("max_in_flight"), int):
+                settings.ai.max_in_flight = int(selected["max_in_flight"])
 
     if yaml and rules_path.exists():
         raw = yaml.safe_load(rules_path.read_text()) or {}
@@ -139,4 +145,6 @@ def load_settings(config_dir: str | Path | None = None) -> Settings:
     settings.ai.api_key_env = os.getenv("TERM_COPILOT_AI_API_KEY_ENV", settings.ai.api_key_env)
     settings.ai.timeout_ms = int(os.getenv("TERM_COPILOT_AI_TIMEOUT_MS", settings.ai.timeout_ms))
     settings.ai.max_input_chars = int(os.getenv("TERM_COPILOT_AI_MAX_INPUT_CHARS", settings.ai.max_input_chars))
+    settings.ai.backoff_seconds = float(os.getenv("TERM_COPILOT_AI_BACKOFF_SECONDS", settings.ai.backoff_seconds))
+    settings.ai.max_in_flight = int(os.getenv("TERM_COPILOT_AI_MAX_IN_FLIGHT", settings.ai.max_in_flight))
     return settings

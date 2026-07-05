@@ -16,6 +16,8 @@ ai:
   api_key_env: "GEMINI_API_KEY"
   timeout_ms: 1500
   max_input_chars: 2000
+  backoff_seconds: 5.0
+  max_in_flight: 2
 ```
 
 Provider metadata lives in `config/providers.yaml`. Environment variables can
@@ -28,11 +30,15 @@ TERM_COPILOT_AI_MODEL=...
 TERM_COPILOT_AI_API_KEY_ENV=...
 TERM_COPILOT_AI_TIMEOUT_MS=1500
 TERM_COPILOT_AI_MAX_INPUT_CHARS=2000
+TERM_COPILOT_AI_BACKOFF_SECONDS=5
+TERM_COPILOT_AI_MAX_IN_FLIGHT=2
 ```
 
 The `fake` provider is local-only and intended for tests and manual validation.
 It does not perform network IO. Non-fake providers require an API key in the
 configured environment variable before the predictor considers them available.
+For local failure testing, set `TERM_COPILOT_FAKE_AI_MODE=fail` or
+`TERM_COPILOT_FAKE_AI_MODE=timeout`.
 
 ## Prediction Flow
 
@@ -48,6 +54,24 @@ The predictor only calls AI after:
 AI is not called for natural-language questions, very short input, dangerous
 commands, secret-looking buffers, or when local/cache suggestions are already
 strong.
+
+When AI is eligible, the predictor schedules provider work in a bounded
+background thread and returns the normal local/cache result or an empty
+suggestion immediately. A tiny grace wait lets instant local fake-provider calls
+finish during CLI/manual checks, but slow providers are not allowed to become the
+interactive hot path. Completed AI output is stored in the existing local
+suggestion cache only after full validation. Later identical requests can reuse
+that cached result through the normal cache path.
+
+Each AI request is tied to a local request key built from the normalized buffer,
+cursor, cwd/project root, git branch, shell, root mode, and project profile
+signals. Identical requests share one in-flight provider call. Results for an
+older buffer/context are saved under the old cache key and cannot be returned for
+a changed buffer/context.
+
+Provider failures and timeouts set an in-memory cooldown controlled by
+`backoff_seconds`. During cooldown, AI is skipped and prediction stays local.
+The cooldown is process-local and disappears when the daemon restarts.
 
 ## Request Contract
 
@@ -99,6 +123,16 @@ Use the local fake provider for deterministic validation without network IO:
 TERM_COPILOT_DB=/tmp/term-copilot-ai.sqlite3 \
 TERM_COPILOT_AI_ENABLED=1 \
 TERM_COPILOT_AI_PROVIDER=fake \
+./venv/bin/python -m daemon.main predict "docker compose lo" --cwd "$PWD"
+```
+
+Timeout/failure backoff can be smoke-tested without network IO:
+
+```bash
+TERM_COPILOT_DB=/tmp/term-copilot-ai.sqlite3 \
+TERM_COPILOT_AI_ENABLED=1 \
+TERM_COPILOT_AI_PROVIDER=fake \
+TERM_COPILOT_FAKE_AI_MODE=timeout \
 ./venv/bin/python -m daemon.main predict "docker compose lo" --cwd "$PWD"
 ```
 

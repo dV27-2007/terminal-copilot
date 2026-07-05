@@ -97,12 +97,21 @@ prediction adapter uses the socket path first and falls back to HTTP only when
 the socket is unavailable. Command/event recording still uses the existing HTTP
 event endpoint.
 
+The zsh adapter uses zsh socket modules for prediction, so the socket hot path
+does not spawn Python. It clears stale suggestion state before each prediction
+request and records accepted/executed events through a silent background event
+helper. Bash remains a fallback adapter: it records command execution and offers
+a `Ctrl+F` prediction accept helper, but it does not render native zsh-style
+ghost text.
+
 ## Root And Session Context
 
 The regular daemon should normally run as the regular user. Root or sudo shells
 connect to that daemon only through an explicit `TERM_COPILOT_SOCKET`, typically
 pointing at the user's socket such as
 `/home/david/.cache/term-copilot/daemon.sock`.
+Without an explicit socket, root-mode shell adapters suppress prediction and
+event posting silently and do not use HTTP fallback.
 
 Shell adapters send lightweight session metadata with prediction requests:
 
@@ -202,9 +211,9 @@ Pruning removes:
 Accepted and ignored events update both command history and any matching cached
 suggestion. Command execution updates history success/failure counts and also
 marks matching cache rows with used/success/fail counters. The current zsh
-adapter emits accepted and command-executed events, but it does not yet emit a
-reliable ignored event; the daemon/store side supports `suggestion_ignored` for
-future adapter wiring and manual CLI testing.
+adapter emits accepted and command-executed events with session/root metadata,
+but it does not emit `suggestion_ignored`; the daemon/store side supports that
+event for future adapter wiring and manual CLI testing.
 
 ## Prediction Pipeline
 
@@ -243,6 +252,14 @@ signals such as Docker services or package scripts, and a small set of recent
 successful commands. The request does not include terminal scrollback. Payloads
 are redacted before provider calls, and any context value that still required
 secret redaction is dropped from list fields.
+
+AI work is scheduled in bounded background threads keyed by normalized buffer,
+cursor, cwd/project root, git branch, shell, root mode and project profile
+signals. Identical in-flight requests are deduplicated. Completed results are
+stored only in the existing suggestion cache after validation, so stale output
+for an older buffer/context cannot be returned for a newer cache key. Provider
+timeouts and failures set a short in-memory backoff that skips AI while leaving
+local prediction untouched.
 
 Responses must be strict JSON with a command continuation and numeric
 confidence. Markdown, explanations, non-continuations, dangerous suggestions,

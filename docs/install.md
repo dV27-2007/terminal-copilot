@@ -56,7 +56,11 @@ not installed, `doctor` reports a warning.
 ```
 
 Bash does not render zsh-style ghost text. The bash adapter records executed
-commands and provides a `Ctrl+F` prediction accept helper through Readline.
+commands and provides a `Ctrl+F` prediction accept helper through Readline. For
+normal user shells it uses the same default socket path as zsh,
+`~/.cache/term-copilot/daemon.sock`, unless `TERM_COPILOT_SOCKET` is already
+set. In root mode it does not guess `/root/.cache/...`; set
+`TERM_COPILOT_SOCKET` explicitly.
 
 ## Status
 
@@ -92,6 +96,13 @@ Doctor prints `PASS`, `WARN`, and `FAIL` checks for local setup:
 - common `zsh-autosuggestions` install locations;
 - managed rc blocks and duplicate managed blocks;
 - config files.
+
+For end-to-end zsh verification, start the daemon with a temp DB/socket, source
+the zsh plugin in a second shell, type `docker co`, accept the ghost suggestion
+with Right Arrow or Ctrl+F, execute it, then run `status` to confirm command and
+cache counts changed. Natural-language input such as `как запустить backend`
+should not produce a suggestion, and a stopped daemon should not print shell
+errors.
 
 Warnings include expected states such as a stopped daemon. The command exits
 non-zero only for serious local failures such as unwritable DB/socket paths or a
@@ -131,8 +142,10 @@ TERM_COPILOT_HOME=<original home when provided or safely inferred>
 ```
 
 Root install refuses to run unless `--socket` or `TERM_COPILOT_SOCKET` is
-provided. It does not guess a regular user's socket path on its own. Uninstall
-uses the same managed markers and removes only the managed block:
+provided. Shell adapters also suppress prediction and event posting in root mode
+when no explicit socket is configured. They do not guess a regular user's socket
+path on their own. Uninstall uses the same managed markers and removes only the
+managed block:
 
 ```bash
 sudo ./venv/bin/python -m daemon.main uninstall --root --shell zsh
@@ -154,5 +167,6 @@ Automatic systemd/launchd autostart is intentionally not part of this stage.
 ## Known Limitations
 
 - zsh emits `suggestion_accepted` and `command_executed` events.
-- zsh does not yet reliably emit `suggestion_ignored`.
+- zsh does not yet reliably emit `suggestion_ignored`; the daemon/store support
+  the event, but the adapter avoids fragile false-positive shell logic.
 - Bash remains a fallback adapter and does not provide native ghost text.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -33,10 +34,21 @@ class FakeProvider:
     """Local-only provider for tests and manual validation.
 
     It never performs network IO. Set TERM_COPILOT_FAKE_AI_RESPONSE to a JSON
-    response to exercise response validation.
+    response to exercise response validation. TERM_COPILOT_FAKE_AI_MODE can be
+    set to "fail" or "timeout" to exercise provider error handling.
     """
 
     def complete_json(self, payload: dict[str, Any], *, timeout_ms: int) -> str:
+        mode = os.getenv("TERM_COPILOT_FAKE_AI_MODE", "").lower()
+        if mode == "fail":
+            raise RuntimeError("fake provider failure")
+        if mode == "timeout":
+            raise TimeoutError("fake provider timeout")
+        delay_ms = int(os.getenv("TERM_COPILOT_FAKE_AI_DELAY_MS", "0") or "0")
+        if delay_ms > 0:
+            if delay_ms > timeout_ms:
+                raise TimeoutError("fake provider timeout")
+            time.sleep(delay_ms / 1000)
         raw = os.getenv("TERM_COPILOT_FAKE_AI_RESPONSE")
         if raw:
             return raw

@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any
+
 from .ai_client import AIClient
 from .cache_store import CacheStore
 from .config import Settings, load_settings
@@ -21,6 +28,30 @@ def ghost_from_full(buffer: str, full_command: str) -> str:
     return ""
 
 
+AI_INLINE_GRACE_SECONDS = 0.01
+AI_BACKOFF_REASONS = {
+    "ai timeout",
+    "ai provider failed",
+    "invalid ai response",
+    "invalid ai json",
+    "invalid ai confidence",
+    "invalid ai risk",
+    "missing ai command",
+    "dangerous ai response",
+    "unsafe ai command",
+    "ai command is not a continuation",
+}
+
+
+@dataclass(slots=True)
+class _AIRequestState:
+    key: str
+    context: CommandContext
+    done: threading.Event
+    suggestion: Suggestion | None = None
+    thread: threading.Thread | None = None
+
+
 class Predictor:
     def __init__(
         self,
@@ -34,6 +65,10 @@ class Predictor:
         self.cache = cache or CacheStore(self.settings.daemon.db_path)
         self.safety = SafetyPolicy(self.settings.dangerous_patterns)
         self.ai_client = ai_client or AIClient.from_settings(self.settings)
+        self._ai_lock = threading.RLock()
+        self._ai_inflight: dict[str, _AIRequestState] = {}
+        self._ai_backoff_until = 0.0
+        self._ai_backoff_reason = ""
 
     def predict(self, request: PredictRequest) -> Suggestion:
         cursor = request.cursor if request.cursor is not None else len(request.buffer)
@@ -72,10 +107,11 @@ class Predictor:
                         return suggestion
 
         if self._should_call_ai(context, ranked):
-            ai_suggestion = self.ai_client.complete(context)
-            if self._valid_suggestion(context, ai_suggestion, source="ai") and ai_suggestion.confidence >= self.settings.prediction.ai_confidence_threshold:
-                self.cache.save(context, ai_suggestion)
-                return ai_suggestion
+            ai_state = self._schedule_ai(context)
+            if ai_state and ai_state.done.wait(AI_INLINE_GRACE_SECONDS):
+                ai_suggestion = ai_state.suggestion or empty_suggestion("ai pending")
+                if self._valid_ai_result(context, ai_suggestion):
+                    return ai_suggestion
 
         return empty_suggestion("no confident suggestion")
 
@@ -162,6 +198,8 @@ class Predictor:
             return False
         if not self.ai_client.available():
             return False
+        if self._ai_in_backoff():
+            return False
         if len(context.buffer.strip()) < max(4, self.settings.prediction.min_buffer_length):
             return False
         if contains_secret(context.buffer):
@@ -174,6 +212,101 @@ class Predictor:
         if context.root_mode and safety.risk != "safe":
             return False
         return True
+
+    def _valid_ai_result(self, context: CommandContext, suggestion: Suggestion) -> bool:
+        return (
+            self._valid_suggestion(context, suggestion, source="ai")
+            and suggestion.confidence >= self.settings.prediction.ai_confidence_threshold
+        )
+
+    @staticmethod
+    def _hash_payload(payload: dict[str, Any]) -> str:
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _ai_request_key(self, context: CommandContext) -> str:
+        return self._hash_payload(
+            {
+                "buffer": " ".join(context.buffer.strip().split()),
+                "cursor": context.cursor,
+                "cwd": context.cwd,
+                "project_root": context.project_root,
+                "git_branch": context.git_branch,
+                "shell": context.shell,
+                "root_mode": bool(context.root_mode),
+                "project_type": context.project.project_type,
+                "project_types": context.project.project_types,
+                "project_marker_hash": context.project.marker_hash,
+                "project_tools": context.project.detected_tools,
+                "docker_services": context.project.docker_services,
+                "package_scripts": context.project.package_scripts,
+                "make_targets": context.project.make_targets,
+                "pytest_paths": context.project.pytest_paths,
+            }
+        )
+
+    def _ai_in_backoff(self) -> bool:
+        with self._ai_lock:
+            return time.monotonic() < self._ai_backoff_until
+
+    def _record_ai_backoff(self, reason: str) -> None:
+        backoff_seconds = max(0.0, float(self.settings.ai.backoff_seconds))
+        if backoff_seconds <= 0:
+            return
+        with self._ai_lock:
+            self._ai_backoff_until = max(self._ai_backoff_until, time.monotonic() + backoff_seconds)
+            self._ai_backoff_reason = reason
+
+    def _schedule_ai(self, context: CommandContext) -> _AIRequestState | None:
+        key = self._ai_request_key(context)
+        max_in_flight = max(0, int(self.settings.ai.max_in_flight))
+        if max_in_flight <= 0:
+            return None
+        with self._ai_lock:
+            existing = self._ai_inflight.get(key)
+            if existing:
+                return existing
+            if len(self._ai_inflight) >= max_in_flight:
+                return None
+            state = _AIRequestState(key=key, context=context, done=threading.Event())
+            thread = threading.Thread(target=self._run_ai_request, args=(state,), name="term-copilot-ai", daemon=True)
+            state.thread = thread
+            self._ai_inflight[key] = state
+            thread.start()
+            return state
+
+    def _run_ai_request(self, state: _AIRequestState) -> None:
+        suggestion = empty_suggestion("ai pending")
+        try:
+            suggestion = self.ai_client.complete(state.context)
+            if self._ai_request_key(state.context) == state.key and self._valid_ai_result(state.context, suggestion):
+                self.cache.save(state.context, suggestion)
+            elif suggestion.reason in AI_BACKOFF_REASONS:
+                self._record_ai_backoff(suggestion.reason)
+        except Exception:
+            suggestion = empty_suggestion("ai provider failed")
+            self._record_ai_backoff(suggestion.reason)
+        finally:
+            state.suggestion = suggestion
+            state.done.set()
+            with self._ai_lock:
+                if self._ai_inflight.get(state.key) is state:
+                    self._ai_inflight.pop(state.key, None)
+
+    def wait_for_pending_ai(self, timeout: float = 1.0) -> None:
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._ai_lock:
+                states = list(self._ai_inflight.values())
+            if not states:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            for state in states:
+                thread = state.thread
+                if thread is not None:
+                    thread.join(timeout=max(0.0, min(remaining, 0.05)))
 
     def record_command(self, command: str, *, cwd: str | None, exit_code: int | None, duration_ms: int | None, shell: str = "zsh") -> None:
         request = PredictRequest(buffer=command, cwd=cwd, shell=shell)

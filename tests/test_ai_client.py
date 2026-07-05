@@ -16,6 +16,24 @@ class StaticProvider:
         return self.raw
 
 
+class TimeoutProvider:
+    def __init__(self):
+        self.calls = 0
+
+    def complete_json(self, payload, *, timeout_ms: int) -> str:
+        self.calls += 1
+        raise TimeoutError("timeout")
+
+
+class FailingProvider:
+    def __init__(self):
+        self.calls = 0
+
+    def complete_json(self, payload, *, timeout_ms: int) -> str:
+        self.calls += 1
+        raise RuntimeError("failure")
+
+
 def context(tmp_path: Path, *, buffer: str = "docker compose lo", root_mode: bool = False) -> CommandContext:
     return CommandContext(
         buffer=buffer,
@@ -80,6 +98,38 @@ def test_ai_request_context_respects_max_input_chars(tmp_path: Path):
 
     assert provider.calls == 0
     assert suggestion.full_command == ""
+
+
+def test_ai_timeout_and_provider_failure_return_empty(tmp_path: Path):
+    timeout_provider = TimeoutProvider()
+    timeout_client = AIClient(enabled=True, provider="fake", provider_impl=timeout_provider)
+    timeout_suggestion = timeout_client.complete(context(tmp_path))
+
+    failing_provider = FailingProvider()
+    failing_client = AIClient(enabled=True, provider="fake", provider_impl=failing_provider)
+    failing_suggestion = failing_client.complete(context(tmp_path))
+
+    assert timeout_provider.calls == 1
+    assert timeout_suggestion.full_command == ""
+    assert timeout_suggestion.reason == "ai timeout"
+    assert failing_provider.calls == 1
+    assert failing_suggestion.full_command == ""
+    assert failing_suggestion.reason == "ai provider failed"
+
+
+def test_fake_provider_failure_modes_are_local_only(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("TERM_COPILOT_FAKE_AI_MODE", "timeout")
+    timeout_client = AIClient(enabled=True, provider="fake")
+    timeout_suggestion = timeout_client.complete(context(tmp_path))
+
+    monkeypatch.setenv("TERM_COPILOT_FAKE_AI_MODE", "fail")
+    failing_client = AIClient(enabled=True, provider="fake")
+    failing_suggestion = failing_client.complete(context(tmp_path))
+
+    assert timeout_suggestion.full_command == ""
+    assert timeout_suggestion.reason == "ai timeout"
+    assert failing_suggestion.full_command == ""
+    assert failing_suggestion.reason == "ai provider failed"
 
 
 def test_valid_ai_json_response_is_accepted_as_suffix(tmp_path: Path):

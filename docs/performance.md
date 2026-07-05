@@ -96,7 +96,9 @@ These are practical MVP targets, not hard guarantees:
 - Unix socket transport should stay much cheaper than CLI subprocess prediction;
 - zsh adapter must not spawn Python in the socket prediction path;
 - daemon RAM should remain bounded as history/cache grows;
-- AI fallback must not block interactive typing.
+- AI fallback must not block interactive typing; eligible AI work is scheduled
+  in bounded background threads, deduplicated by request key, and skipped during
+  short provider failure backoff.
 
 CLI subprocess prediction is expected to be much slower than daemon/socket
 prediction because it pays Python interpreter startup and imports each time.

@@ -63,6 +63,11 @@ discarded before ghost text is returned. Accepted AI responses still pass throug
 the normal continuation, command-like, safety, root-mode, and cache-validation
 checks.
 
+AI provider work is request-keyed and bounded in memory. Identical in-flight
+requests are deduplicated, provider failures/timeouts trigger a local cooldown,
+and completed AI output is cached only under the exact local context key that
+produced it. A result for an older buffer cannot be served to a changed buffer.
+
 The daemon should normally run as the regular user. A root shell can use that
 daemon only when the shell environment or root install block explicitly sets
 `TERM_COPILOT_SOCKET` to the user's daemon socket and marks

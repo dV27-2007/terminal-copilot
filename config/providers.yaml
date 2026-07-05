@@ -5,6 +5,8 @@ providers:
     model: "gemini-1.5-flash"
     timeout_ms: 1500
     max_input_chars: 2000
+    backoff_seconds: 5.0
+    max_in_flight: 2
 
   groq:
     enabled: false
@@ -12,6 +14,8 @@ providers:
     model: "llama-3.1-8b-instant"
     timeout_ms: 1500
     max_input_chars: 2000
+    backoff_seconds: 5.0
+    max_in_flight: 2
 
   openrouter:
     enabled: false
@@ -19,6 +23,8 @@ providers:
     model: "openrouter/free"
     timeout_ms: 1500
     max_input_chars: 2000
+    backoff_seconds: 5.0
+    max_in_flight: 2
 
   fake:
     enabled: false
@@ -26,3 +32,5 @@ providers:
     model: "fake-inline-completion"
     timeout_ms: 50
     max_input_chars: 2000
+    backoff_seconds: 5.0
+    max_in_flight: 2

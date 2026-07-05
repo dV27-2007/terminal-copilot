@@ -11,8 +11,17 @@ __term_copilot_is_root_mode() {
   [ "${TERM_COPILOT_ROOT_MODE:-}" = "1" ] || [ "${EUID:-}" = "0" ]
 }
 
+if [ -z "${TERM_COPILOT_SOCKET:-}" ] && ! __term_copilot_is_root_mode; then
+  : "${TERM_COPILOT_SOCKET:=${TERM_COPILOT_HOME:-${HOME}}/.cache/term-copilot/daemon.sock}"
+fi
+
+__TERM_COPILOT_LAST_RECORDED_HISTCMD=""
+
 __term_copilot_post_json() {
   local endpoint="$1" payload="$2"
+  if __term_copilot_is_root_mode && [ -z "${TERM_COPILOT_SOCKET:-}" ]; then
+    return 1
+  fi
   TERM_COPILOT_ENDPOINT="$endpoint" TERM_COPILOT_PAYLOAD="$payload" python3 - <<'PY' >/dev/null 2>&1 &
 import os, urllib.request
 url = os.environ.get("TERM_COPILOT_URL", "http://127.0.0.1:8765") + os.environ["TERM_COPILOT_ENDPOINT"]
@@ -52,14 +61,30 @@ PY
 }
 
 __term_copilot_json_event() {
-  TERM_COPILOT_EVENT="$1" TERM_COPILOT_COMMAND="$2" TERM_COPILOT_EXIT_CODE="$3" TERM_COPILOT_CWD="$PWD" python3 - <<'PY' 2>/dev/null
+  local effective_uid="${EUID:-}"
+  case "$effective_uid" in
+    ''|*[!0-9]*) effective_uid="" ;;
+  esac
+  TERM_COPILOT_EVENT="$1" TERM_COPILOT_COMMAND="$2" TERM_COPILOT_EXIT_CODE="$3" TERM_COPILOT_CWD="$PWD" TERM_COPILOT_EFFECTIVE_UID="$effective_uid" python3 - <<'PY' 2>/dev/null
 import json, os
+
+def int_or_none(value):
+  try:
+    return int(value)
+  except Exception:
+    return None
+
+effective_uid = int_or_none(os.environ.get("TERM_COPILOT_EFFECTIVE_UID"))
 payload = {
   "event": os.environ.get("TERM_COPILOT_EVENT"),
   "command": os.environ.get("TERM_COPILOT_COMMAND") or None,
   "cwd": os.environ.get("TERM_COPILOT_CWD"),
   "shell": "bash",
-  "exit_code": int(os.environ.get("TERM_COPILOT_EXIT_CODE") or 0),
+  "exit_code": int_or_none(os.environ.get("TERM_COPILOT_EXIT_CODE")),
+  "effective_uid": effective_uid,
+  "root_mode": os.environ.get("TERM_COPILOT_ROOT_MODE") == "1" or effective_uid == 0,
+  "original_user": os.environ.get("SUDO_USER") or os.environ.get("TERM_COPILOT_USER"),
+  "term_copilot_home": os.environ.get("TERM_COPILOT_HOME"),
 }
 print(json.dumps(payload, ensure_ascii=False), end="")
 PY
@@ -67,9 +92,15 @@ PY
 
 __term_copilot_prompt_command() {
   local exit_code="$?"
-  local cmd
+  local cmd histcmd="${HISTCMD:-}"
+  if [ -n "$histcmd" ] && [ "$histcmd" = "$__TERM_COPILOT_LAST_RECORDED_HISTCMD" ]; then
+    return
+  fi
   cmd="$(history 1 | sed 's/^ *[0-9]* *//')"
-  [ -n "$cmd" ] && __term_copilot_post_json "/events" "$(__term_copilot_json_event command_executed "$cmd" "$exit_code")"
+  if [ -n "$cmd" ]; then
+    __TERM_COPILOT_LAST_RECORDED_HISTCMD="$histcmd"
+    __term_copilot_post_json "/events" "$(__term_copilot_json_event command_executed "$cmd" "$exit_code")"
+  fi
 }
 
 case ";$PROMPT_COMMAND;" in

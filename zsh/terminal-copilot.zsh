@@ -22,6 +22,12 @@ typeset -g TERM_COPILOT_LAST_SOURCE=""
 typeset -g TERM_COPILOT_EXEC_CMD=""
 typeset -g TERM_COPILOT_EXEC_STARTED=""
 
+_term_copilot_clear_suggestion_state() {
+  TERM_COPILOT_LAST_FULL=""
+  TERM_COPILOT_LAST_BUFFER=""
+  TERM_COPILOT_LAST_SOURCE=""
+}
+
 _term_copilot_is_root_mode() {
   [[ "${TERM_COPILOT_ROOT_MODE:-}" == "1" || "${EUID:-}" == "0" ]]
 }
@@ -159,8 +165,11 @@ _term_copilot_predict_transport() {
 }
 
 _term_copilot_event_json() {
-  local event="$1" command="$2" exit_code="$3" duration_ms="$4" suggestion="$5" source="$6"
-  TERM_COPILOT_EVENT="$event" TERM_COPILOT_COMMAND="$command" TERM_COPILOT_EXIT_CODE="$exit_code" TERM_COPILOT_DURATION_MS="$duration_ms" TERM_COPILOT_SUGGESTION="$suggestion" TERM_COPILOT_SOURCE="$source" TERM_COPILOT_CWD="$PWD" python3 - <<'PY' 2>/dev/null
+  local event="$1" command="$2" exit_code="$3" duration_ms="$4" suggestion="$5" source="$6" buffer="$7"
+  local root_mode="false" effective_uid="${EUID:-}"
+  _term_copilot_is_root_mode && root_mode="true"
+  [[ "$effective_uid" == <-> ]] || effective_uid=""
+  TERM_COPILOT_EVENT="$event" TERM_COPILOT_COMMAND="$command" TERM_COPILOT_EXIT_CODE="$exit_code" TERM_COPILOT_DURATION_MS="$duration_ms" TERM_COPILOT_SUGGESTION="$suggestion" TERM_COPILOT_SOURCE="$source" TERM_COPILOT_BUFFER="$buffer" TERM_COPILOT_CWD="$PWD" TERM_COPILOT_EFFECTIVE_UID="$effective_uid" TERM_COPILOT_ROOT_MODE_VALUE="$root_mode" TERM_COPILOT_ORIGINAL_USER="${SUDO_USER:-${TERM_COPILOT_USER:-}}" python3 - <<'PY' 2>/dev/null
 import json
 import os
 
@@ -179,15 +188,22 @@ payload = {
     "shell": "zsh",
     "exit_code": int_or_none(os.environ.get("TERM_COPILOT_EXIT_CODE")),
     "duration_ms": int_or_none(os.environ.get("TERM_COPILOT_DURATION_MS")),
+    "effective_uid": int_or_none(os.environ.get("TERM_COPILOT_EFFECTIVE_UID")),
+    "root_mode": os.environ.get("TERM_COPILOT_ROOT_MODE_VALUE") == "true",
+    "original_user": os.environ.get("TERM_COPILOT_ORIGINAL_USER") or None,
+    "term_copilot_home": os.environ.get("TERM_COPILOT_HOME") or None,
 }
 print(json.dumps(payload, ensure_ascii=False), end="")
 PY
 }
 
 _term_copilot_post_event() {
-  local event="$1" command="$2" exit_code="$3" duration_ms="$4" suggestion="$5" source="$6"
+  local event="$1" command="$2" exit_code="$3" duration_ms="$4" suggestion="$5" source="$6" buffer="$7"
   local payload
-  payload="$(_term_copilot_event_json "$event" "$command" "$exit_code" "$duration_ms" "$suggestion" "$source")"
+  if _term_copilot_is_root_mode && [[ -z "${TERM_COPILOT_SOCKET:-}" ]]; then
+    return 1
+  fi
+  payload="$(_term_copilot_event_json "$event" "$command" "$exit_code" "$duration_ms" "$suggestion" "$source" "$buffer")"
   [[ -n "$payload" ]] && { TERM_COPILOT_PAYLOAD="$payload" TERM_COPILOT_ENDPOINT="/events" python3 - <<'PY' >/dev/null 2>&1 &!
 import os, urllib.request
 url = os.environ.get("TERM_COPILOT_URL", "http://127.0.0.1:8765") + os.environ["TERM_COPILOT_ENDPOINT"]
@@ -202,6 +218,7 @@ PY
 
 _zsh_autosuggest_strategy_term_copilot() {
   local prefix="$1"
+  _term_copilot_clear_suggestion_state
   [[ -z "$prefix" ]] && return
   [[ ${#prefix} -lt 2 ]] && return
 
@@ -227,17 +244,24 @@ _zsh_autosuggest_strategy_term_copilot() {
 
 term-copilot-accept() {
   local full="$TERM_COPILOT_LAST_FULL"
+  local buffer="$TERM_COPILOT_LAST_BUFFER"
   local source="$TERM_COPILOT_LAST_SOURCE"
+  local accepted=""
   if zle -l autosuggest-accept >/dev/null 2>&1; then
     zle autosuggest-accept
+    accepted="$BUFFER"
   elif [[ -n "$full" ]]; then
     BUFFER="$full"
     CURSOR=${#BUFFER}
+    accepted="$BUFFER"
   else
     zle forward-char
     return
   fi
-  [[ -n "$full" ]] && _term_copilot_post_event "suggestion_accepted" "" "" "" "$full" "$source"
+  if [[ -n "$full" && "$accepted" == "$full" ]]; then
+    _term_copilot_post_event "suggestion_accepted" "" "" "" "$accepted" "$source" "$buffer"
+  fi
+  _term_copilot_clear_suggestion_state
 }
 zle -N term-copilot-accept
 bindkey '^F' term-copilot-accept
@@ -254,16 +278,14 @@ _term_copilot_precmd() {
   [[ -z "$cmd" ]] && return
   local now="${EPOCHREALTIME:-$SECONDS}"
   local duration_ms=""
-  duration_ms="$(TERM_COPILOT_START="$TERM_COPILOT_EXEC_STARTED" TERM_COPILOT_NOW="$now" python3 - <<'PY' 2>/dev/null
-import os
-try:
-    print(int((float(os.environ.get("TERM_COPILOT_NOW", "0")) - float(os.environ.get("TERM_COPILOT_START", "0"))) * 1000), end="")
-except Exception:
-    print("", end="")
-PY
-)"
+  if [[ -n "$TERM_COPILOT_EXEC_STARTED" ]]; then
+    duration_ms=$(( (now - TERM_COPILOT_EXEC_STARTED) * 1000 ))
+    duration_ms="${duration_ms%%.*}"
+    (( duration_ms < 0 )) && duration_ms=""
+  fi
   _term_copilot_post_event "command_executed" "$cmd" "$exit_code" "$duration_ms" "" ""
   TERM_COPILOT_EXEC_CMD=""
+  TERM_COPILOT_EXEC_STARTED=""
 }
 
 autoload -Uz add-zsh-hook 2>/dev/null || true
