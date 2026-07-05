@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from daemon.history_store import HistoryStore
-from daemon.main import MANAGED_END, MANAGED_START, main
+from daemon.main import MANAGED_END, MANAGED_START, _managed_block, main
 
 
 def configure_temp_home(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
@@ -63,6 +63,9 @@ def test_doctor_handles_missing_daemon_without_crashing(tmp_path: Path, monkeypa
 
     output = capsys.readouterr().out
     assert "PASS: Python package import works" in output
+    assert "effective uid:" in output
+    assert "root mode:" in output
+    assert "TERM_COPILOT_SOCKET set: yes" in output
     assert "WARN: daemon socket is not present" in output
     assert "HTTP fallback unreachable" in output
 
@@ -111,3 +114,25 @@ def test_install_collapses_duplicate_managed_blocks_safely(tmp_path: Path, monke
     assert "middle" in text
     assert "after" in text
     assert "old managed content" not in text
+
+
+def test_root_install_requires_explicit_socket(tmp_path: Path, monkeypatch, capsys):
+    configure_temp_home(tmp_path, monkeypatch)
+    monkeypatch.delenv("TERM_COPILOT_SOCKET", raising=False)
+
+    assert main(["install", "--root", "--shell", "zsh"]) == 2
+
+    assert "install --root requires --socket" in capsys.readouterr().err
+
+
+def test_root_managed_block_uses_exact_socket_and_root_mode(monkeypatch):
+    monkeypatch.setenv("TERM_COPILOT_USER", "david")
+    monkeypatch.setenv("TERM_COPILOT_HOME", "/home/david")
+
+    block = _managed_block("zsh", socket_path="/home/david/.cache/term-copilot/daemon.sock", root=True)
+
+    assert "export TERM_COPILOT_SOCKET='/home/david/.cache/term-copilot/daemon.sock'" in block
+    assert "export TERM_COPILOT_ROOT_MODE=1" in block
+    assert "export TERM_COPILOT_USER='david'" in block
+    assert "export TERM_COPILOT_HOME='/home/david'" in block
+    assert "${TERM_COPILOT_SOCKET:-" not in block

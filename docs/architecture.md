@@ -97,6 +97,34 @@ prediction adapter uses the socket path first and falls back to HTTP only when
 the socket is unavailable. Command/event recording still uses the existing HTTP
 event endpoint.
 
+## Root And Session Context
+
+The regular daemon should normally run as the regular user. Root or sudo shells
+connect to that daemon only through an explicit `TERM_COPILOT_SOCKET`, typically
+pointing at the user's socket such as
+`/home/david/.cache/term-copilot/daemon.sock`.
+
+Shell adapters send lightweight session metadata with prediction requests:
+
+```text
+shell
+cwd
+effective_uid
+original_user / TERM_COPILOT_USER
+TERM_COPILOT_HOME when provided
+root_mode
+```
+
+Root mode is enabled when the effective uid is `0` or
+`TERM_COPILOT_ROOT_MODE=1`. In root mode, zsh and bash prediction adapters fail
+silently if no explicit socket is configured and do not use HTTP fallback for
+prediction. Normal user shell behavior keeps the existing socket-first,
+HTTP-fallback path.
+
+`install --root --socket <path>` writes a managed root rc block only when root
+mode is explicitly requested. The block sets `TERM_COPILOT_SOCKET` to the exact
+provided path and sets `TERM_COPILOT_ROOT_MODE=1`.
+
 ## Local Storage
 
 Command history is stored in local SQLite. `daemon/history_store.py` owns the

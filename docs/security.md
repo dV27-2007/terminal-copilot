@@ -9,6 +9,8 @@ Implemented baseline:
 - dangerous suggestions are blocked before ghost text is returned;
 - caution patterns are allowed only with lower ranking confidence;
 - root mode applies stricter ranking penalties and blocks non-safe AI suggestions;
+- root shell prediction requires an explicit `TERM_COPILOT_SOCKET` and does not
+  use HTTP fallback;
 - AI is disabled by default;
 - AI client stub redacts payload before provider calls are added;
 - command history is local SQLite by default.
@@ -45,6 +47,13 @@ Root mode keeps the same response format but uses stronger penalties for caution
 commands involving `rm`, `chmod`, `chown`, `dd`, `mkfs`, Docker system/volume
 mutation and mount operations. AI remains disabled by default; if an AI source is
 ever enabled, root mode rejects non-safe AI suggestions.
+
+The daemon should normally run as the regular user. A root shell can use that
+daemon only when the shell environment or root install block explicitly sets
+`TERM_COPILOT_SOCKET` to the user's daemon socket and marks
+`TERM_COPILOT_ROOT_MODE=1`. Root shell adapters fail silently when this socket is
+missing; they do not guess a user's home directory and do not send prediction
+requests to HTTP fallback in root mode.
 
 Before enabling real cloud fallback, enforce:
 

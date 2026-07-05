@@ -19,6 +19,11 @@ from .ipc import PROTOCOL_VERSION, UnixSocketPredictionServer, request_predictio
 from .models import PredictRequest
 from .predictor import Predictor
 
+try:
+    import pwd
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    pwd = None  # type: ignore[assignment]
+
 MANAGED_START = "# >>> term-copilot init >>>"
 MANAGED_END = "# <<< term-copilot init <<<"
 SUPPORTED_SHELLS = ("zsh", "bash")
@@ -137,18 +142,33 @@ def _http_url(settings) -> str:
     return f"http://{settings.daemon.host}:{settings.daemon.port}"
 
 
+def _root_session_values() -> tuple[str | None, str | None]:
+    user = os.getenv("TERM_COPILOT_USER") or os.getenv("SUDO_USER")
+    home = os.getenv("TERM_COPILOT_HOME")
+    if user and not home and pwd is not None:
+        try:
+            home = pwd.getpwnam(user).pw_dir
+        except KeyError:
+            home = None
+    return user, home
+
+
 def _managed_block(shell: str, *, socket_path: str, root: bool = False) -> str:
     plugin = _shell_plugin_path(shell)
     lines = [
         MANAGED_START,
         "# Managed by terminal-copilot. Remove with: python -m daemon.main uninstall",
-        f"export TERM_COPILOT_SOCKET=${{TERM_COPILOT_SOCKET:-{_sh_quote(socket_path)}}}",
     ]
     if root:
-        user = os.getenv("SUDO_USER") or os.getenv("USER") or ""
+        user, home = _root_session_values()
+        lines.append(f"export TERM_COPILOT_SOCKET={_sh_quote(socket_path)}")
         if user:
             lines.append(f"export TERM_COPILOT_USER={_sh_quote(user)}")
+        if home:
+            lines.append(f"export TERM_COPILOT_HOME={_sh_quote(home)}")
         lines.append("export TERM_COPILOT_ROOT_MODE=1")
+    else:
+        lines.append(f"export TERM_COPILOT_SOCKET=${{TERM_COPILOT_SOCKET:-{_sh_quote(socket_path)}}}")
     lines.extend(
         [
             f"[ -f {_sh_quote(plugin)} ] && source {_sh_quote(plugin)}",
@@ -304,6 +324,33 @@ def _http_status(url: str) -> tuple[bool, str]:
         return False, f"unreachable: {exc}"
 
 
+def _current_euid() -> int | None:
+    try:
+        return os.geteuid()
+    except AttributeError:
+        return None
+
+
+def _env_root_mode(euid: int | None = None) -> bool:
+    return os.getenv("TERM_COPILOT_ROOT_MODE") == "1" or euid == 0
+
+
+def _socket_permission_message(path: Path, *, euid: int | None) -> tuple[str, str] | None:
+    if not path.exists():
+        return None
+    try:
+        info = path.stat()
+    except OSError as exc:
+        return ("WARN", f"socket permission check failed: {path} ({exc})")
+    mode = stat.S_IMODE(info.st_mode)
+    details = f"socket owner uid={info.st_uid}, mode={oct(mode)}"
+    if euid == 0:
+        return ("PASS", f"{details}; root can normally open owner-only sockets")
+    if euid is not None and euid != info.st_uid and mode & 0o022 == 0:
+        return ("WARN", f"{details}; current uid may not be allowed to connect")
+    return ("PASS", details)
+
+
 def _managed_block_count(path: Path) -> int:
     if not path.exists():
         return 0
@@ -359,9 +406,22 @@ def _doctor_line(kind: str, message: str) -> tuple[str, bool]:
 def doctor(args: argparse.Namespace) -> int:
     settings = load_settings(args.config_dir)
     failures = 0
+    euid = _current_euid()
+    root_mode = _env_root_mode(euid)
 
     _, failed = _doctor_line("PASS", "Python package import works")
     failures += int(failed)
+
+    _doctor_line("PASS", f"effective uid: {euid if euid is not None else 'unknown'}")
+    _doctor_line("PASS" if not root_mode or os.getenv("TERM_COPILOT_ROOT_MODE") == "1" or euid == 0 else "WARN", f"root mode: {'enabled' if root_mode else 'disabled'}")
+    socket_env = os.getenv("TERM_COPILOT_SOCKET")
+    _doctor_line("PASS" if socket_env else "WARN", f"TERM_COPILOT_SOCKET set: {'yes' if socket_env else 'no'}")
+    if root_mode and not socket_env:
+        _doctor_line("WARN", "root mode should use an explicit TERM_COPILOT_SOCKET pointing at the user daemon")
+    original_user = os.getenv("TERM_COPILOT_USER") or os.getenv("SUDO_USER")
+    if root_mode:
+        _doctor_line("PASS" if original_user else "WARN", f"original user metadata: {'set' if original_user else 'missing'}")
+        _doctor_line("PASS" if os.getenv("TERM_COPILOT_HOME") else "WARN", f"TERM_COPILOT_HOME set: {'yes' if os.getenv('TERM_COPILOT_HOME') else 'no'}")
 
     db_path = Path(settings.daemon.db_path).expanduser()
     try:
@@ -394,6 +454,9 @@ def doctor(args: argparse.Namespace) -> int:
         failures += int(failed)
     else:
         _doctor_line("WARN", f"daemon socket is not present: {socket_path}")
+    permission = _socket_permission_message(socket_path, euid=euid)
+    if permission:
+        _doctor_line(*permission)
 
     http_url = _http_url(settings)
     http_ok, http_msg = _http_status(http_url)
@@ -426,8 +489,9 @@ def doctor(args: argparse.Namespace) -> int:
     else:
         _doctor_line("WARN", "zsh-autosuggestions not found in common locations")
 
+    check_root_rc = root_mode
     for shell in SUPPORTED_SHELLS:
-        rc = _rc_path(shell)
+        rc = _rc_path(shell, root=check_root_rc)
         count = _managed_block_count(rc)
         if count == 1:
             _doctor_line("PASS", f"{rc} contains one managed install block")

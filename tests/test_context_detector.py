@@ -2,8 +2,9 @@ import os
 from pathlib import Path
 
 from daemon.config import Settings
-from daemon.context_detector import is_command_like
+from daemon.context_detector import build_context, is_command_like
 from daemon.history_store import HistoryStore
+from daemon.models import PredictRequest
 from daemon.project_detector import clear_project_cache, detect_project
 
 
@@ -66,3 +67,14 @@ def test_detect_project_context(tmp_path: Path):
     assert profile.docker_services == ["backend", "celery"]
     assert "dev" in profile.package_scripts
     assert "tests/" in profile.pytest_paths
+
+
+def test_build_context_preserves_root_session_metadata(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("TERM_COPILOT_USER", "david")
+    request = PredictRequest(buffer="docker co", cwd=str(tmp_path), shell="zsh", effective_uid=0, root_mode=False)
+
+    context = build_context(request, Settings(), None)
+
+    assert context.effective_uid == 0
+    assert context.root_mode is True
+    assert context.original_user == "david"

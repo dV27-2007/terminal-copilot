@@ -63,3 +63,13 @@ def test_root_mode_is_stricter_for_mutation_commands():
     assert normal.risk == "dangerous"
     assert root.risk == "dangerous"
     assert not policy().is_allowed_suggestion("rm file.txt", buffer="rm", root_mode=True, source="ai")
+
+
+def test_root_mode_marks_caution_with_root_reason():
+    normal = policy().classify("rm file.txt", buffer="rm", root_mode=False, source="history")
+    root = policy().classify("rm file.txt", buffer="rm", root_mode=True, source="history")
+
+    assert normal.risk == "caution"
+    assert normal.reason == "file removal"
+    assert root.risk == "caution"
+    assert root.reason.startswith("root mode caution")

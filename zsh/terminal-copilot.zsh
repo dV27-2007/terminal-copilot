@@ -6,8 +6,11 @@
 : ${TERM_COPILOT_HOST:=127.0.0.1}
 : ${TERM_COPILOT_PORT:=8765}
 : ${TERM_COPILOT_URL:=http://${TERM_COPILOT_HOST}:${TERM_COPILOT_PORT}}
-: ${TERM_COPILOT_SOCKET:=${HOME}/.cache/term-copilot/daemon.sock}
 : ${TERM_COPILOT_TIMEOUT:=0.20}
+
+if [[ -z "${TERM_COPILOT_SOCKET:-}" && "${TERM_COPILOT_ROOT_MODE:-}" != "1" && "${EUID:-}" != "0" ]]; then
+  : ${TERM_COPILOT_SOCKET:=${TERM_COPILOT_HOME:-${HOME}}/.cache/term-copilot/daemon.sock}
+fi
 
 zmodload zsh/datetime 2>/dev/null || true
 zmodload zsh/net/socket 2>/dev/null || true
@@ -18,6 +21,10 @@ typeset -g TERM_COPILOT_LAST_BUFFER=""
 typeset -g TERM_COPILOT_LAST_SOURCE=""
 typeset -g TERM_COPILOT_EXEC_CMD=""
 typeset -g TERM_COPILOT_EXEC_STARTED=""
+
+_term_copilot_is_root_mode() {
+  [[ "${TERM_COPILOT_ROOT_MODE:-}" == "1" || "${EUID:-}" == "0" ]]
+}
 
 _term_copilot_json_escape() {
   local value="$1"
@@ -84,13 +91,13 @@ PY
 _term_copilot_predict_json() {
   local prefix="$1"
   local cursor="$2"
-  local buffer_json cwd_json user_json original_user_json root_mode effective_uid
+  local buffer_json cwd_json user_json original_user_json home_json root_mode effective_uid
 
   [[ -n "$cursor" ]] || cursor="${#prefix}"
   effective_uid="${EUID:-null}"
   [[ "$effective_uid" == <-> ]] || effective_uid="null"
   root_mode="false"
-  [[ "${TERM_COPILOT_ROOT_MODE:-}" == "1" || "$effective_uid" == "0" ]] && root_mode="true"
+  _term_copilot_is_root_mode && root_mode="true"
 
   _term_copilot_json_escape "$prefix"
   buffer_json="$REPLY"
@@ -100,13 +107,15 @@ _term_copilot_predict_json() {
   user_json="$REPLY"
   _term_copilot_json_string_or_null "${SUDO_USER:-${TERM_COPILOT_USER:-}}"
   original_user_json="$REPLY"
+  _term_copilot_json_string_or_null "${TERM_COPILOT_HOME:-}"
+  home_json="$REPLY"
 
-  print -r -- "{\"protocol_version\":1,\"buffer\":\"${buffer_json}\",\"cursor\":${cursor},\"cwd\":\"${cwd_json}\",\"shell\":\"zsh\",\"user\":${user_json},\"effective_uid\":${effective_uid},\"original_user\":${original_user_json},\"root_mode\":${root_mode}}"
+  print -r -- "{\"protocol_version\":1,\"buffer\":\"${buffer_json}\",\"cursor\":${cursor},\"cwd\":\"${cwd_json}\",\"shell\":\"zsh\",\"user\":${user_json},\"effective_uid\":${effective_uid},\"original_user\":${original_user_json},\"term_copilot_home\":${home_json},\"root_mode\":${root_mode}}"
 }
 
 _term_copilot_socket_json() {
   local payload="$1"
-  local socket_path="${TERM_COPILOT_SOCKET:-${HOME}/.cache/term-copilot/daemon.sock}"
+  local socket_path="${TERM_COPILOT_SOCKET:-}"
   local fd response rc
 
   [[ -n "$socket_path" && -S "$socket_path" ]] || return 1
@@ -137,11 +146,15 @@ _term_copilot_socket_json() {
 _term_copilot_predict_transport() {
   local payload="$1"
   local response
+  if _term_copilot_is_root_mode && [[ -z "${TERM_COPILOT_SOCKET:-}" ]]; then
+    return 1
+  fi
   response="$(_term_copilot_socket_json "$payload")"
   if [[ -n "$response" ]]; then
     print -r -- "$response"
     return 0
   fi
+  _term_copilot_is_root_mode && return 1
   _term_copilot_http_json "/predict" "$payload"
 }
 

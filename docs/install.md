@@ -110,11 +110,43 @@ does not delete the SQLite DB or cache.
 
 ## Root Install
 
+The main daemon should normally run as the regular user. Root shells should
+connect to that daemon through an explicit socket path owned by the user daemon,
+for example `/home/david/.cache/term-copilot/daemon.sock`.
+
 Root shell integration is explicit only:
 
 ```bash
 sudo TERM_COPILOT_SOCKET=/tmp/term-copilot-root.sock \
   ./venv/bin/python -m daemon.main install --root --shell zsh --socket /tmp/term-copilot-root.sock
+```
+
+The root managed block sets:
+
+```text
+TERM_COPILOT_SOCKET=<provided path>
+TERM_COPILOT_ROOT_MODE=1
+TERM_COPILOT_USER=<original user when provided or safely inferred>
+TERM_COPILOT_HOME=<original home when provided or safely inferred>
+```
+
+Root install refuses to run unless `--socket` or `TERM_COPILOT_SOCKET` is
+provided. It does not guess a regular user's socket path on its own. Uninstall
+uses the same managed markers and removes only the managed block:
+
+```bash
+sudo ./venv/bin/python -m daemon.main uninstall --root --shell zsh
+```
+
+For ad hoc root testing without editing root rc files:
+
+```bash
+sudo env \
+  TERM_COPILOT_SOCKET=/home/david/.cache/term-copilot/daemon.sock \
+  TERM_COPILOT_ROOT_MODE=1 \
+  TERM_COPILOT_USER="$USER" \
+  TERM_COPILOT_HOME="$HOME" \
+  ./venv/bin/python -m daemon.main doctor
 ```
 
 Automatic systemd/launchd autostart is intentionally not part of this stage.

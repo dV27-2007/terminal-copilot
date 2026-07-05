@@ -212,6 +212,16 @@ def test_root_mode_does_not_return_dangerous_suggestion(tmp_path: Path):
     assert suggestion.full_command == ""
 
 
+def test_root_mode_still_returns_safe_suggestion(tmp_path: Path):
+    predictor = make_predictor(tmp_path)
+    predictor.record_command("docker compose ps", cwd=str(tmp_path), exit_code=0, duration_ms=100)
+
+    suggestion = predictor.predict(PredictRequest(buffer="docker co", cwd=str(tmp_path), shell="zsh", root_mode=True, effective_uid=0))
+
+    assert suggestion.full_command == "docker compose ps"
+    assert suggestion.risk == "safe"
+
+
 def test_project_context_docker_logs(tmp_path: Path):
     (tmp_path / "docker-compose.yml").write_text("services:\n  backend:\n    image: app\n")
     predictor = make_predictor(tmp_path)

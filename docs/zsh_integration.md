@@ -10,7 +10,13 @@ The strategy sends the current prefix to the local daemon, receives `ghost_text`
 and returns the full suggestion to zsh-autosuggestions. Prediction uses Unix
 socket IPC first when `$TERM_COPILOT_SOCKET` or the default
 `~/.cache/term-copilot/daemon.sock` exists. If the socket path is unavailable,
-the plugin falls back to the existing localhost HTTP `/predict` endpoint.
+the plugin falls back to the existing localhost HTTP `/predict` endpoint for
+normal user shells.
+
+In root mode, detected from effective uid `0` or `TERM_COPILOT_ROOT_MODE=1`, the
+adapter requires an explicit `TERM_COPILOT_SOCKET` and does not fall back to
+HTTP prediction. This lets a sudo/root shell connect to the regular user's
+daemon only when the socket path has been intentionally configured.
 
 The socket path uses zsh builtins from `zsh/net/socket` and `zsh/system`, so the
 prediction hot path does not spawn Python when Unix socket IPC is available.
