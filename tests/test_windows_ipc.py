@@ -1,3 +1,7 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from daemon.windows_ipc import (
@@ -10,6 +14,8 @@ from daemon.windows_ipc import (
     request_pipe,
     windows_named_pipe_supported,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_named_pipe_reports_unavailable_on_non_windows():
@@ -97,3 +103,60 @@ def test_generic_pipe_request_is_unavailable_on_non_windows():
 def test_pipe_server_is_unavailable_on_non_windows():
     with pytest.raises(Exception, match="not supported"):
         WindowsNamedPipePredictionServer(object(), r"\\.\pipe\term-copilot-test")
+
+
+def test_windows_validation_doc_exists_and_covers_required_shells():
+    text = (ROOT / "docs" / "windows_validation.md").read_text()
+
+    assert "Windows PowerShell 5.1" in text
+    assert "PowerShell 7+" in text
+    assert "Windows Terminal" in text
+    assert "Administrator" in text
+
+
+def test_windows_validation_doc_covers_transports_and_safety_limits():
+    text = (ROOT / "docs" / "windows_validation.md").read_text()
+
+    assert "Pipe-Only Accepted Event" in text
+    assert "HTTP-Only Accepted Event" in text
+    assert "HTTP Fallback Prediction" in text
+    assert "no automatic execution" in text
+    assert "secret-looking input rejection" in text
+    assert "`command_executed`" in text
+    assert "remains deferred" in text
+
+
+def test_windows_pipe_benchmark_exists_and_exposes_expected_options():
+    script = ROOT / "benchmarks" / "bench_windows_pipe.py"
+
+    assert script.exists()
+    help_proc = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5.0,
+        check=False,
+    )
+
+    assert help_proc.returncode == 0
+    assert "--pipe" in help_proc.stdout
+    assert "--iterations" in help_proc.stdout
+
+
+@pytest.mark.skipif(windows_named_pipe_supported(), reason="non-Windows behavior only")
+def test_windows_pipe_benchmark_skips_gracefully_on_non_windows():
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "benchmarks" / "bench_windows_pipe.py"), "--iterations", "1"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5.0,
+        check=False,
+    )
+
+    assert proc.returncode == 0
+    assert "skipping benchmark" in proc.stdout
+    assert proc.stderr == ""

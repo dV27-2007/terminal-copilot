@@ -42,12 +42,22 @@ Then run:
 ./venv/bin/python benchmarks/bench_http_predict.py --url http://127.0.0.1:9876
 ```
 
+On native Windows with a daemon started using `--pipe`:
+
+```powershell
+.\venv\Scripts\python.exe benchmarks\bench_windows_pipe.py --pipe $env:TERM_COPILOT_PIPE --iterations 200
+```
+
+The Windows pipe benchmark exits with a skip message on non-Windows platforms.
+
 ## Scripts
 
 - `bench_predict_cli.py`: direct predictor latency, first prediction latency,
   and full CLI subprocess prediction latency.
 - `bench_ipc_socket.py`: Unix socket prediction latency against a running
   daemon.
+- `bench_windows_pipe.py`: Windows Named Pipe prediction latency against a
+  running daemon.
 - `bench_http_predict.py`: localhost HTTP prediction latency against a running
   daemon.
 - `bench_sqlite_history.py`: history insert/upsert and prefix/context search.

@@ -167,6 +167,10 @@ default HTTP URL from an Administrator shell.
 
 ## Manual Verification
 
+For the full Windows checklist, including PowerShell 7+, Windows PowerShell
+5.1, Windows Terminal, Administrator mode, pipe-only events, and HTTP fallback,
+see `docs/windows_validation.md`.
+
 ```powershell
 $env:TERM_COPILOT_PIPE = "\\.\pipe\term-copilot-$env:USERNAME"
 $env:TERM_COPILOT_HTTP_URL = "http://127.0.0.1:8765"

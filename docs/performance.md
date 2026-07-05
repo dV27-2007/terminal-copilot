@@ -57,6 +57,24 @@ Then run:
 
 These scripts intentionally benchmark localhost transports only.
 
+On native Windows, start the daemon with a Named Pipe in one PowerShell:
+
+```powershell
+$env:TERM_COPILOT_PIPE = "\\.\pipe\term-copilot-$env:USERNAME"
+$env:TERM_COPILOT_HTTP_URL = "http://127.0.0.1:9876"
+.\venv\Scripts\python.exe -m daemon.main daemon --port 9876 --pipe $env:TERM_COPILOT_PIPE
+```
+
+Then run the guarded Windows pipe benchmark in another PowerShell:
+
+```powershell
+.\venv\Scripts\python.exe benchmarks\bench_windows_pipe.py --pipe $env:TERM_COPILOT_PIPE --iterations 200
+```
+
+`bench_windows_pipe.py` does not start the daemon automatically, does not
+require PowerShell beyond the shell used to launch Python, and exits with a
+graceful skip message on non-Windows platforms.
+
 ## What Each Benchmark Measures
 
 - `bench_predict_cli.py`
@@ -65,6 +83,9 @@ These scripts intentionally benchmark localhost transports only.
   - full CLI subprocess prediction.
 - `bench_ipc_socket.py`
   - Unix socket request/response latency against a running daemon.
+- `bench_windows_pipe.py`
+  - Windows Named Pipe request/response latency against a running daemon;
+  - guarded no-op on non-Windows.
 - `bench_http_predict.py`
   - localhost HTTP `/predict` latency against a running daemon.
 - `bench_sqlite_history.py`
@@ -132,6 +153,8 @@ If memory grows:
 - RSS is best-effort. Linux `/proc/<pid>/status` is used when available;
   otherwise RAM prints as unavailable.
 - HTTP and Unix socket benchmarks require a separately running daemon.
+- The Windows Named Pipe benchmark requires native Windows and a separately
+  running daemon started with `--pipe`; it is skipped on Linux/macOS.
 - The startup daemon readiness benchmark is optional because it launches a
   temporary daemon process.
 - No benchmark reads shell scrollback, `.env`, or external services.
