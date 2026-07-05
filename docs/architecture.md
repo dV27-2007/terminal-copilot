@@ -57,6 +57,16 @@ modifying existing rc files. Uninstall removes only managed blocks and does not
 delete history/cache data. Status and doctor are local-only and do not enable AI
 or contact external services.
 
+## Benchmarks
+
+The `benchmarks/` directory contains local-only scripts for measuring the Python
+MVP before optimizing it. The default benchmarks use temporary SQLite databases
+and standard-library timing. They cover direct prediction, CLI subprocess
+prediction, Unix socket and HTTP transport latency, SQLite history operations,
+project detection cache behavior, suggestion cache operations, startup/import
+cost, and best-effort RSS snapshots. See `docs/performance.md` for run commands,
+targets, and interpretation guidance.
+
 ## Local IPC
 
 The daemon now starts a Unix domain socket prediction endpoint on POSIX systems
