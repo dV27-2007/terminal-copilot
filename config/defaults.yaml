@@ -18,6 +18,7 @@ ai:
   provider: "gemini"
   model: "gemini-1.5-flash"
   api_key_env: "GEMINI_API_KEY"
+  endpoint: ""
   timeout_ms: 1500
   max_input_chars: 2000
   max_recent_commands: 10

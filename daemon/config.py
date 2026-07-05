@@ -58,6 +58,7 @@ class AISettings:
     provider: str = "gemini"
     model: str = "gemini-1.5-flash"
     api_key_env: str = "GEMINI_API_KEY"
+    endpoint: str = ""
     timeout_ms: int = 1500
     max_input_chars: int = 2000
     max_recent_commands: int = 10
@@ -116,6 +117,8 @@ def load_settings(config_dir: str | Path | None = None) -> Settings:
                 settings.ai.model = str(selected["model"])
             if isinstance(selected.get("api_key_env"), str):
                 settings.ai.api_key_env = str(selected["api_key_env"])
+            if isinstance(selected.get("endpoint"), str):
+                settings.ai.endpoint = str(selected["endpoint"])
             if isinstance(selected.get("timeout_ms"), int):
                 settings.ai.timeout_ms = int(selected["timeout_ms"])
             if isinstance(selected.get("max_input_chars"), int):
@@ -143,6 +146,7 @@ def load_settings(config_dir: str | Path | None = None) -> Settings:
     settings.ai.provider = os.getenv("TERM_COPILOT_AI_PROVIDER", settings.ai.provider)
     settings.ai.model = os.getenv("TERM_COPILOT_AI_MODEL", settings.ai.model)
     settings.ai.api_key_env = os.getenv("TERM_COPILOT_AI_API_KEY_ENV", settings.ai.api_key_env)
+    settings.ai.endpoint = os.getenv("TERM_COPILOT_AI_ENDPOINT", settings.ai.endpoint)
     settings.ai.timeout_ms = int(os.getenv("TERM_COPILOT_AI_TIMEOUT_MS", settings.ai.timeout_ms))
     settings.ai.max_input_chars = int(os.getenv("TERM_COPILOT_AI_MAX_INPUT_CHARS", settings.ai.max_input_chars))
     settings.ai.backoff_seconds = float(os.getenv("TERM_COPILOT_AI_BACKOFF_SECONDS", settings.ai.backoff_seconds))

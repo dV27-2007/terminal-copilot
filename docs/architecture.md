@@ -268,9 +268,12 @@ suggestions are then passed back through the normal predictor validation,
 command-like gate, safety policy, root-mode rules, and cache validation. In root
 mode, AI-sourced suggestions must classify as `safe`.
 
-The current implementation includes a local-only `fake` provider for tests and
-manual validation. Non-fake providers remain unconfigured unless API-key-backed
-provider implementations are added later.
+The provider registry includes `fake`, `gemini`, `groq`, and `openrouter`.
+`fake` is local-only for tests and manual validation. The non-fake providers are
+small stdlib HTTP skeletons that read API keys only from configured environment
+variables, build requests from the sanitized AI payload, normalize provider
+responses to the shared JSON contract, and leave final validation to the
+predictor/AI client gates. Unknown provider names fail safely.
 
 `daemon/context_detector.py` treats input as command-like when the first token is
 on `PATH`, is a known local tool, is present in command history, is a close known

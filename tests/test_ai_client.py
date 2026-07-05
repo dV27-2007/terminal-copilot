@@ -1,7 +1,30 @@
+import json
 from pathlib import Path
 
-from daemon.ai_client import AIClient
+import pytest
+
+from daemon.ai_client import (
+    AIClient,
+    AIProviderConfig,
+    FakeProvider,
+    GeminiProvider,
+    GroqProvider,
+    OpenRouterProvider,
+    UnconfiguredProvider,
+    create_provider,
+)
+from daemon.config import load_settings
 from daemon.models import CommandContext, ProjectProfile
+
+
+class CaptureTransport:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def post_json(self, url: str, headers: dict[str, str], body: dict, *, timeout_ms: int) -> dict:
+        self.calls.append({"url": url, "headers": headers, "body": body, "timeout_ms": timeout_ms})
+        return self.response
 
 
 class StaticProvider:
@@ -14,6 +37,18 @@ class StaticProvider:
         self.calls += 1
         self.payloads.append(payload)
         return self.raw
+
+
+def provider_response(provider: str, raw: str) -> dict:
+    if provider == "gemini":
+        return {"candidates": [{"content": {"parts": [{"text": raw}]}}]}
+    return {"choices": [{"message": {"content": raw}}]}
+
+
+def endpoint_for(provider: str) -> str:
+    if provider == "gemini":
+        return "https://example.test/v1beta/models/{model}:generateContent"
+    return f"https://example.test/{provider}/chat/completions"
 
 
 class TimeoutProvider:
@@ -70,6 +105,130 @@ def test_ai_disabled_by_default_does_not_call_provider(tmp_path: Path):
 
     assert provider.calls == 0
     assert suggestion.full_command == ""
+
+
+def test_provider_factory_returns_fake_provider():
+    provider = create_provider(AIProviderConfig(provider="fake"))
+
+    assert isinstance(provider, FakeProvider)
+
+
+def test_provider_factory_rejects_unknown_provider_safely(tmp_path: Path):
+    provider = create_provider(AIProviderConfig(provider="unknown"))
+    client = AIClient(enabled=True, provider="unknown", api_key_env="")
+
+    assert isinstance(provider, UnconfiguredProvider)
+    assert not client.available()
+    assert client.complete(context(tmp_path)).full_command == ""
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "provider_cls"),
+    [
+        ("gemini", GeminiProvider),
+        ("groq", GroqProvider),
+        ("openrouter", OpenRouterProvider),
+    ],
+)
+def test_live_provider_skeletons_require_configured_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider_name: str, provider_cls):
+    monkeypatch.delenv("TERM_COPILOT_TEST_AI_KEY", raising=False)
+    transport = CaptureTransport(provider_response(provider_name, "{}"))
+    client = AIClient(
+        enabled=True,
+        provider=provider_name,
+        model="model-test",
+        api_key_env="TERM_COPILOT_TEST_AI_KEY",
+        endpoint=endpoint_for(provider_name),
+        transport=transport,
+    )
+
+    suggestion = client.complete(context(tmp_path))
+    provider = create_provider(
+        AIProviderConfig(provider=provider_name, model="model-test", api_key_env="TERM_COPILOT_TEST_AI_KEY", endpoint=endpoint_for(provider_name)),
+        transport=transport,
+    )
+
+    assert isinstance(provider, provider_cls)
+    assert not client.available()
+    assert suggestion.full_command == ""
+    assert transport.calls == []
+    with pytest.raises(RuntimeError):
+        provider.complete_json({"current_buffer": "docker co"}, timeout_ms=10)
+
+
+@pytest.mark.parametrize("provider_name", ["gemini", "groq", "openrouter"])
+def test_live_provider_request_uses_sanitized_payload_and_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider_name: str):
+    monkeypatch.setenv("TERM_COPILOT_TEST_AI_KEY", "provider-secret-value")
+    raw = '{"completion":"gs -f backend","confidence":0.82,"risk":"safe"}'
+    transport = CaptureTransport(provider_response(provider_name, raw))
+    client = AIClient(
+        enabled=True,
+        provider=provider_name,
+        model="model-test",
+        api_key_env="TERM_COPILOT_TEST_AI_KEY",
+        endpoint=endpoint_for(provider_name),
+        timeout_ms=321,
+        transport=transport,
+    )
+
+    suggestion = client.complete(context(tmp_path))
+
+    assert suggestion.full_command == "docker compose logs -f backend"
+    assert suggestion.source == "ai"
+    assert len(transport.calls) == 1
+    call = transport.calls[0]
+    encoded_body = json.dumps(call["body"], ensure_ascii=False)
+    assert call["timeout_ms"] == 321
+    assert "provider-secret-value" not in encoded_body
+    assert "postgres://user:pass" not in encoded_body
+    assert "abcdefghijklmnopqrstuvwxyz" not in encoded_body
+    assert str(tmp_path) not in encoded_body
+    assert "docker compose lo" in encoded_body
+    assert "strict JSON" in encoded_body
+    if provider_name == "gemini":
+        assert "model-test" in call["url"]
+        assert call["headers"]["x-goog-api-key"] == "provider-secret-value"
+    else:
+        assert call["headers"]["Authorization"] == "Bearer provider-secret-value"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "```json\n{\"full_command\":\"docker compose logs -f backend\"}\n```",
+        '{"full_command":"docker compose down","confidence":0.9,"risk":"dangerous"}',
+        '{"full_command":"docker compose logs -f backend OPENAI_API_KEY=abc","confidence":0.9,"risk":"safe"}',
+    ],
+)
+def test_provider_output_still_passes_existing_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str):
+    monkeypatch.setenv("TERM_COPILOT_TEST_AI_KEY", "provider-secret-value")
+    transport = CaptureTransport(provider_response("groq", raw))
+    client = AIClient(
+        enabled=True,
+        provider="groq",
+        model="model-test",
+        api_key_env="TERM_COPILOT_TEST_AI_KEY",
+        endpoint=endpoint_for("groq"),
+        transport=transport,
+    )
+
+    suggestion = client.complete(context(tmp_path))
+
+    assert len(transport.calls) == 1
+    assert suggestion.full_command == ""
+
+
+def test_provider_endpoint_config_and_env_override(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TERM_COPILOT_AI_PROVIDER", "groq")
+    monkeypatch.delenv("TERM_COPILOT_AI_ENDPOINT", raising=False)
+    settings = load_settings()
+
+    assert settings.ai.endpoint == "https://api.groq.com/openai/v1/chat/completions"
+
+    monkeypatch.setenv("TERM_COPILOT_AI_ENDPOINT", "https://example.test/custom")
+    settings = load_settings()
+
+    assert settings.ai.endpoint == "https://example.test/custom"
 
 
 def test_ai_request_context_is_redacted_and_minimal(tmp_path: Path):

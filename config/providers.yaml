@@ -3,6 +3,7 @@ providers:
     enabled: false
     api_key_env: "GEMINI_API_KEY"
     model: "gemini-1.5-flash"
+    endpoint: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     timeout_ms: 1500
     max_input_chars: 2000
     backoff_seconds: 5.0
@@ -12,6 +13,7 @@ providers:
     enabled: false
     api_key_env: "GROQ_API_KEY"
     model: "llama-3.1-8b-instant"
+    endpoint: "https://api.groq.com/openai/v1/chat/completions"
     timeout_ms: 1500
     max_input_chars: 2000
     backoff_seconds: 5.0
@@ -21,6 +23,7 @@ providers:
     enabled: false
     api_key_env: "OPENROUTER_API_KEY"
     model: "openrouter/free"
+    endpoint: "https://openrouter.ai/api/v1/chat/completions"
     timeout_ms: 1500
     max_input_chars: 2000
     backoff_seconds: 5.0
@@ -30,6 +33,7 @@ providers:
     enabled: false
     api_key_env: ""
     model: "fake-inline-completion"
+    endpoint: ""
     timeout_ms: 50
     max_input_chars: 2000
     backoff_seconds: 5.0

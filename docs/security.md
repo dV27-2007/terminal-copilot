@@ -68,6 +68,12 @@ requests are deduplicated, provider failures/timeouts trigger a local cooldown,
 and completed AI output is cached only under the exact local context key that
 produced it. A result for an older buffer cannot be served to a changed buffer.
 
+Gemini, Groq, and OpenRouter provider skeletons use only the sanitized AI
+payload and read API keys only from configured environment variables. They do not
+log request bodies or API keys. Enabling a live provider explicitly sends the
+sanitized command context to that external API, so AI remains disabled by
+default.
+
 The daemon should normally run as the regular user. A root shell can use that
 daemon only when the shell environment or root install block explicitly sets
 `TERM_COPILOT_SOCKET` to the user's daemon socket and marks
@@ -75,8 +81,7 @@ daemon only when the shell environment or root install block explicitly sets
 missing; they do not guess a user's home directory and do not send prediction
 requests to HTTP fallback in root mode.
 
-Before enabling real cloud fallback beyond the current local-only fake provider,
-enforce:
+Before enabling real cloud fallback in regular use, enforce:
 
 - client-side redaction;
 - server-side redaction verification;

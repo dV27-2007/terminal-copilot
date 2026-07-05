@@ -14,6 +14,7 @@ ai:
   provider: "gemini"
   model: "gemini-1.5-flash"
   api_key_env: "GEMINI_API_KEY"
+  endpoint: ""
   timeout_ms: 1500
   max_input_chars: 2000
   backoff_seconds: 5.0
@@ -28,17 +29,38 @@ TERM_COPILOT_AI_ENABLED=1
 TERM_COPILOT_AI_PROVIDER=fake
 TERM_COPILOT_AI_MODEL=...
 TERM_COPILOT_AI_API_KEY_ENV=...
+TERM_COPILOT_AI_ENDPOINT=...
 TERM_COPILOT_AI_TIMEOUT_MS=1500
 TERM_COPILOT_AI_MAX_INPUT_CHARS=2000
 TERM_COPILOT_AI_BACKOFF_SECONDS=5
 TERM_COPILOT_AI_MAX_IN_FLIGHT=2
 ```
 
-The `fake` provider is local-only and intended for tests and manual validation.
-It does not perform network IO. Non-fake providers require an API key in the
-configured environment variable before the predictor considers them available.
-For local failure testing, set `TERM_COPILOT_FAKE_AI_MODE=fail` or
-`TERM_COPILOT_FAKE_AI_MODE=timeout`.
+The provider registry currently supports:
+
+- `fake`: local-only test/manual provider, no network IO;
+- `gemini`: Gemini API skeleton using `GEMINI_API_KEY` by default;
+- `groq`: Groq chat-completions skeleton using `GROQ_API_KEY` by default;
+- `openrouter`: OpenRouter chat-completions skeleton using
+  `OPENROUTER_API_KEY` by default.
+
+Unknown providers fail safely and are treated as unavailable. Non-fake providers
+require an API key in the configured environment variable before the predictor
+considers them available. For local failure testing, set
+`TERM_COPILOT_FAKE_AI_MODE=fail` or `TERM_COPILOT_FAKE_AI_MODE=timeout`.
+
+Example live-provider configuration:
+
+```bash
+export TERM_COPILOT_AI_ENABLED=1
+export TERM_COPILOT_AI_PROVIDER=gemini
+export GEMINI_API_KEY=...
+```
+
+Provider endpoints are loaded from `config/providers.yaml` and can be overridden
+with `TERM_COPILOT_AI_ENDPOINT`. Gemini endpoints may use `{model}` as a
+placeholder. Live provider use sends the sanitized command-context payload to
+the configured external API.
 
 ## Prediction Flow
 
@@ -89,6 +111,11 @@ recent commands are not sent as placeholder-bearing strings. If the payload stil
 exceeds `max_input_chars` after optional context is trimmed, the AI call is
 skipped.
 
+Provider skeletons build requests only from this sanitized payload. They do not
+read `.env` files, shell scrollback, logs, private keys, or arbitrary project
+files. API keys are read only from the configured environment variable and are
+sent as provider authentication headers, never inside the prompt body.
+
 ## Response Contract
 
 Responses must be strict JSON and must describe a continuation of the current
@@ -107,6 +134,11 @@ Accepted AI responses still pass through the normal predictor checks:
 continuation validation, command-like validation, safety classification,
 root-mode restrictions, and cache validation. Root mode only allows AI-sourced
 suggestions that classify as `safe`.
+
+Gemini, Groq, and OpenRouter responses are normalized to the same internal JSON
+shape before validation. Provider output is never trusted directly: markdown,
+explanations, dangerous commands, secrets, invalid confidence/risk, and
+non-continuations are rejected by the shared validator.
 
 ## Manual Validation
 
@@ -143,4 +175,15 @@ TERM_COPILOT_DB=/tmp/term-copilot-ai.sqlite3 \
 TERM_COPILOT_AI_ENABLED=1 \
 TERM_COPILOT_AI_PROVIDER=fake \
 ./venv/bin/python -m daemon.main predict "how do I run docker" --cwd "$PWD"
+```
+
+Provider configuration can be checked without a live call by omitting the API
+key. Missing keys make the provider unavailable and prediction falls back safely:
+
+```bash
+TERM_COPILOT_DB=/tmp/term-copilot-ai.sqlite3 \
+TERM_COPILOT_AI_ENABLED=1 \
+TERM_COPILOT_AI_PROVIDER=gemini \
+TERM_COPILOT_AI_API_KEY_ENV=TERM_COPILOT_MISSING_KEY \
+./venv/bin/python -m daemon.main predict "docker compose lo" --cwd "$PWD"
 ```
