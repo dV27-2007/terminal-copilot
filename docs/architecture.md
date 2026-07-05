@@ -3,7 +3,7 @@
 Runtime path:
 
 ```text
-zsh/bash input
+zsh/bash/fish input
   -> shell integration
   -> local daemon over Unix socket or HTTP fallback
   -> context detector
@@ -29,6 +29,7 @@ The shell integration is not the brain. It only captures the current buffer, cwd
 - `daemon/redactor.py`: client-side redaction utility.
 - `zsh/terminal-copilot.zsh`: zsh autosuggestion strategy.
 - `bash/terminal-copilot.bash`: bash fallback.
+- `fish/terminal-copilot.fish`: fish Ctrl+F fallback.
 
 ## CLI Tooling
 
@@ -100,9 +101,9 @@ event endpoint.
 The zsh adapter uses zsh socket modules for prediction, so the socket hot path
 does not spawn Python. It clears stale suggestion state before each prediction
 request and records accepted/executed events through a silent background event
-helper. Bash remains a fallback adapter: it records command execution and offers
-a `Ctrl+F` prediction accept helper, but it does not render native zsh-style
-ghost text.
+helper. Bash and fish remain fallback adapters: they record command execution
+and offer a `Ctrl+F` prediction accept helper, but they do not render native
+zsh-style ghost text.
 
 ## Root And Session Context
 
@@ -125,10 +126,10 @@ root_mode
 ```
 
 Root mode is enabled when the effective uid is `0` or
-`TERM_COPILOT_ROOT_MODE=1`. In root mode, zsh and bash prediction adapters fail
-silently if no explicit socket is configured and do not use HTTP fallback for
-prediction. Normal user shell behavior keeps the existing socket-first,
-HTTP-fallback path.
+`TERM_COPILOT_ROOT_MODE=1`. In root mode, zsh, bash and fish prediction adapters
+fail silently if no explicit socket is configured and do not use HTTP fallback
+for prediction. Normal user shell behavior keeps the existing socket-first,
+HTTP-fallback path where supported.
 
 `install --root --socket <path>` writes a managed root rc block only when root
 mode is explicitly requested. The block sets `TERM_COPILOT_SOCKET` to the exact

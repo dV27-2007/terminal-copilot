@@ -10,6 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 ZSH_PLUGIN = ROOT / "zsh" / "terminal-copilot.zsh"
 BASH_PLUGIN = ROOT / "bash" / "terminal-copilot.bash"
+FISH_PLUGIN = ROOT / "fish" / "terminal-copilot.fish"
 
 
 def read_plugin(path: Path) -> str:
@@ -387,6 +388,53 @@ def test_bash_event_json_includes_root_metadata():
     assert isinstance(payload["effective_uid"], int)
     assert payload["original_user"] == "david"
     assert payload["term_copilot_home"] == "/home/david"
+
+
+def test_fish_adapter_file_exists_and_is_quiet():
+    text = read_plugin(FISH_PLUGIN)
+
+    assert FISH_PLUGIN.exists()
+    assert "debug" not in text.lower()
+    assert "terminal-copilot fish integration" in text
+    assert "term_copilot_fish_accept" in text
+
+
+def test_fish_adapter_has_safe_root_and_transport_guards():
+    text = read_plugin(FISH_PLUGIN)
+
+    assert "TERM_COPILOT_ROOT_MODE" in text
+    assert 'not set -q TERM_COPILOT_SOCKET' in text
+    assert 'if payload["root_mode"]' in text
+    assert "AF_UNIX" in text
+    assert "/predict" in text
+    assert "/events" in text
+
+
+def test_fish_adapter_does_not_auto_execute_suggestions():
+    text = read_plugin(FISH_PLUGIN)
+
+    assert "commandline --replace" in text
+    assert "commandline -f execute" not in text
+    assert "eval " not in text
+    assert "fish_postexec" in text
+    assert "suggestion_accepted" in text
+    assert "suggestion_ignored" not in text
+
+
+@pytest.mark.skipif(shutil.which("fish") is None, reason="fish is not available")
+def test_fish_syntax_check_passes():
+    proc = subprocess.run(
+        ["fish", "-n", str(FISH_PLUGIN)],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=2.0,
+        check=False,
+    )
+
+    assert proc.returncode == 0
+    assert proc.stderr == ""
 
 
 def test_ignored_suggestion_limitation_is_documented():

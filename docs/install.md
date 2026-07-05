@@ -62,6 +62,29 @@ normal user shells it uses the same default socket path as zsh,
 set. In root mode it does not guess `/root/.cache/...`; set
 `TERM_COPILOT_SOCKET` explicitly.
 
+## Install Fish Fallback
+
+```bash
+./venv/bin/python -m daemon.main install --shell fish
+```
+
+The fish adapter is a lightweight fallback. It does not provide zsh-style ghost
+text. It binds `Ctrl+F` to request one prediction from the daemon and insert the
+returned full command into the commandline without executing it. It records
+`command_executed` through fish's `fish_postexec` event when available and
+records `suggestion_accepted` only when the adapter inserts a suggestion.
+
+The managed block is written to:
+
+```text
+~/.config/fish/config.fish
+```
+
+For normal user shells, fish uses the same default socket path as zsh,
+`~/.cache/term-copilot/daemon.sock`, unless `TERM_COPILOT_SOCKET` is already
+set. In root mode it requires an explicit `TERM_COPILOT_SOCKET` and does not use
+HTTP fallback.
+
 ## Status
 
 ```bash
@@ -92,7 +115,7 @@ Doctor prints `PASS`, `WARN`, and `FAIL` checks for local setup:
 - socket directory creation and socket reachability;
 - HTTP fallback reachability;
 - plugin file presence;
-- zsh syntax check when `zsh` is available;
+- zsh, bash and fish syntax checks when those shells are available;
 - common `zsh-autosuggestions` install locations;
 - managed rc blocks and duplicate managed blocks;
 - config files.
@@ -113,6 +136,7 @@ missing plugin file.
 ```bash
 ./venv/bin/python -m daemon.main uninstall --shell zsh
 ./venv/bin/python -m daemon.main uninstall --shell bash
+./venv/bin/python -m daemon.main uninstall --shell fish
 ```
 
 Uninstall removes only blocks between the managed markers. It preserves all other
@@ -170,3 +194,4 @@ Automatic systemd/launchd autostart is intentionally not part of this stage.
 - zsh does not yet reliably emit `suggestion_ignored`; the daemon/store support
   the event, but the adapter avoids fragile false-positive shell logic.
 - Bash remains a fallback adapter and does not provide native ghost text.
+- Fish remains a fallback adapter and does not provide native ghost text.

@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 
 MANAGED_START = "# >>> term-copilot init >>>"
 MANAGED_END = "# <<< term-copilot init <<<"
-SUPPORTED_SHELLS = ("zsh", "bash")
+SUPPORTED_SHELLS = ("zsh", "bash", "fish")
 
 
 def start_ipc_server(args: argparse.Namespace, settings) -> UnixSocketPredictionServer | None:
@@ -119,10 +119,14 @@ def _shell_plugin_path(shell: str) -> Path:
         return root / "zsh" / "terminal-copilot.zsh"
     if shell == "bash":
         return root / "bash" / "terminal-copilot.bash"
+    if shell == "fish":
+        return root / "fish" / "terminal-copilot.fish"
     raise ValueError(f"unsupported shell: {shell}")
 
 
 def _rc_path(shell: str, *, root: bool = False) -> Path:
+    if shell == "fish":
+        return Path("/root/.config/fish/config.fish") if root else Path.home() / ".config" / "fish" / "config.fish"
     if root:
         return Path("/root/.zshrc" if shell == "zsh" else "/root/.bashrc")
     home = Path.home()
@@ -132,6 +136,11 @@ def _rc_path(shell: str, *, root: bool = False) -> Path:
 def _sh_quote(value: str | Path) -> str:
     text = str(value)
     return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def _fish_quote(value: str | Path) -> str:
+    text = str(value)
+    return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def _default_socket_path(settings) -> str:
@@ -159,23 +168,31 @@ def _managed_block(shell: str, *, socket_path: str, root: bool = False) -> str:
         MANAGED_START,
         "# Managed by terminal-copilot. Remove with: python -m daemon.main uninstall",
     ]
-    if root:
-        user, home = _root_session_values()
-        lines.append(f"export TERM_COPILOT_SOCKET={_sh_quote(socket_path)}")
-        if user:
-            lines.append(f"export TERM_COPILOT_USER={_sh_quote(user)}")
-        if home:
-            lines.append(f"export TERM_COPILOT_HOME={_sh_quote(home)}")
-        lines.append("export TERM_COPILOT_ROOT_MODE=1")
+    if shell == "fish":
+        if root:
+            user, home = _root_session_values()
+            lines.append(f"set -gx TERM_COPILOT_SOCKET {_fish_quote(socket_path)}")
+            if user:
+                lines.append(f"set -gx TERM_COPILOT_USER {_fish_quote(user)}")
+            if home:
+                lines.append(f"set -gx TERM_COPILOT_HOME {_fish_quote(home)}")
+            lines.append("set -gx TERM_COPILOT_ROOT_MODE 1")
+        else:
+            lines.append(f"set -q TERM_COPILOT_SOCKET; or set -gx TERM_COPILOT_SOCKET {_fish_quote(socket_path)}")
+        lines.append(f"test -f {_fish_quote(plugin)}; and source {_fish_quote(plugin)}")
     else:
-        lines.append(f"export TERM_COPILOT_SOCKET=${{TERM_COPILOT_SOCKET:-{_sh_quote(socket_path)}}}")
-    lines.extend(
-        [
-            f"[ -f {_sh_quote(plugin)} ] && source {_sh_quote(plugin)}",
-            MANAGED_END,
-            "",
-        ]
-    )
+        if root:
+            user, home = _root_session_values()
+            lines.append(f"export TERM_COPILOT_SOCKET={_sh_quote(socket_path)}")
+            if user:
+                lines.append(f"export TERM_COPILOT_USER={_sh_quote(user)}")
+            if home:
+                lines.append(f"export TERM_COPILOT_HOME={_sh_quote(home)}")
+            lines.append("export TERM_COPILOT_ROOT_MODE=1")
+        else:
+            lines.append(f"export TERM_COPILOT_SOCKET=${{TERM_COPILOT_SOCKET:-{_sh_quote(socket_path)}}}")
+        lines.append(f"[ -f {_sh_quote(plugin)} ] && source {_sh_quote(plugin)}")
+    lines.extend([MANAGED_END, ""])
     return "\n".join(lines)
 
 
@@ -381,6 +398,7 @@ def status(args: argparse.Namespace) -> int:
     cache_count = _count_table(db_path, "suggestions_cache")
     zsh_blocks = _managed_block_count(Path.home() / ".zshrc")
     bash_blocks = _managed_block_count(Path.home() / ".bashrc")
+    fish_blocks = _managed_block_count(Path.home() / ".config" / "fish" / "config.fish")
 
     print(f"daemon reachable: {'yes' if socket_ok or http_ok else 'no'}")
     print(f"IPC mode: {mode}")
@@ -394,7 +412,7 @@ def status(args: argparse.Namespace) -> int:
     print(f"cache count: {cache_count if cache_count is not None else 'unknown'}")
     print(f"AI enabled: {'yes' if settings.ai.enabled else 'no'}")
     print(f"protocol version: {PROTOCOL_VERSION}")
-    print(f"shell integration: zsh blocks={zsh_blocks}, bash blocks={bash_blocks}")
+    print(f"shell integration: zsh blocks={zsh_blocks}, bash blocks={bash_blocks}, fish blocks={fish_blocks}")
     return 0
 
 
@@ -477,6 +495,28 @@ def doctor(args: argparse.Namespace) -> int:
             failures += int(failed)
     else:
         _doctor_line("WARN", "zsh is not installed; skipped zsh syntax check")
+
+    bash_bin = shutil.which("bash")
+    if bash_bin:
+        proc = subprocess.run([bash_bin, "-n", str(_shell_plugin_path("bash"))], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode == 0:
+            _doctor_line("PASS", "bash syntax check passed")
+        else:
+            _, failed = _doctor_line("FAIL", f"bash syntax check failed: {proc.stderr.strip()}")
+            failures += int(failed)
+    else:
+        _doctor_line("WARN", "bash is not installed; skipped bash syntax check")
+
+    fish_bin = shutil.which("fish")
+    if fish_bin:
+        proc = subprocess.run([fish_bin, "-n", str(_shell_plugin_path("fish"))], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode == 0:
+            _doctor_line("PASS", "fish syntax check passed")
+        else:
+            _, failed = _doctor_line("FAIL", f"fish syntax check failed: {proc.stderr.strip()}")
+            failures += int(failed)
+    else:
+        _doctor_line("WARN", "fish is not installed; skipped fish syntax check")
 
     autosuggest_paths = [
         Path.home() / ".oh-my-zsh/custom/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh",
@@ -579,13 +619,13 @@ def main(argv: list[str] | None = None) -> int:
     p_install = sub.add_parser("install")
     p_install.add_argument("--user", action="store_true")
     p_install.add_argument("--root", action="store_true")
-    p_install.add_argument("--shell", choices=["zsh", "bash", "all"], default="all")
+    p_install.add_argument("--shell", choices=["zsh", "bash", "fish", "all"], default="all")
     p_install.add_argument("--socket", default=None)
     p_install.set_defaults(func=install)
 
     p_uninstall = sub.add_parser("uninstall")
     p_uninstall.add_argument("--root", action="store_true")
-    p_uninstall.add_argument("--shell", choices=["zsh", "bash", "all"], default="all")
+    p_uninstall.add_argument("--shell", choices=["zsh", "bash", "fish", "all"], default="all")
     p_uninstall.set_defaults(func=uninstall)
 
     args = parser.parse_args(argv)

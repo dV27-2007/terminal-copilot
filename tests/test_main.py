@@ -56,6 +56,17 @@ def test_status_works_without_running_daemon_and_reports_db_path(tmp_path: Path,
     assert "AI enabled: no" in output
 
 
+def test_status_reports_fish_managed_blocks(tmp_path: Path, monkeypatch, capsys):
+    home, _, _ = configure_temp_home(tmp_path, monkeypatch)
+
+    assert main(["install", "--shell", "fish"]) == 0
+    assert main(["status"]) == 0
+
+    output = capsys.readouterr().out
+    assert "fish blocks=1" in output
+    assert (home / ".config" / "fish" / "config.fish").exists()
+
+
 def test_doctor_handles_missing_daemon_without_crashing(tmp_path: Path, monkeypatch, capsys):
     configure_temp_home(tmp_path, monkeypatch)
 
@@ -86,6 +97,24 @@ def test_install_zsh_managed_block_is_idempotent_and_backed_up(tmp_path: Path, m
     assert list(home.glob(".zshrc.term-copilot.bak*"))
 
 
+def test_install_fish_managed_block_is_idempotent_and_backed_up(tmp_path: Path, monkeypatch):
+    home, _, socket_path = configure_temp_home(tmp_path, monkeypatch)
+    fish_config = home / ".config" / "fish" / "config.fish"
+    fish_config.parent.mkdir(parents=True)
+    fish_config.write_text("set -gx KEEP_ME 1\n")
+
+    assert main(["install", "--shell", "fish"]) == 0
+    assert main(["install", "--shell", "fish"]) == 0
+
+    text = fish_config.read_text()
+    assert text.count(MANAGED_START) == 1
+    assert text.count(MANAGED_END) == 1
+    assert "set -gx KEEP_ME 1" in text
+    assert f"set -q TERM_COPILOT_SOCKET; or set -gx TERM_COPILOT_SOCKET '{socket_path}'" in text
+    assert "terminal-copilot.fish" in text
+    assert list(fish_config.parent.glob("config.fish.term-copilot.bak*"))
+
+
 def test_uninstall_removes_only_managed_block(tmp_path: Path, monkeypatch):
     home, _, _ = configure_temp_home(tmp_path, monkeypatch)
     zshrc = home / ".zshrc"
@@ -98,6 +127,21 @@ def test_uninstall_removes_only_managed_block(tmp_path: Path, monkeypatch):
     assert MANAGED_START not in text
     assert MANAGED_END not in text
     assert "export KEEP_ME=1" in text
+
+
+def test_uninstall_fish_removes_only_managed_block(tmp_path: Path, monkeypatch):
+    home, _, _ = configure_temp_home(tmp_path, monkeypatch)
+    fish_config = home / ".config" / "fish" / "config.fish"
+    fish_config.parent.mkdir(parents=True)
+    fish_config.write_text("set -gx KEEP_ME 1\n")
+
+    assert main(["install", "--shell", "fish"]) == 0
+    assert main(["uninstall", "--shell", "fish"]) == 0
+
+    text = fish_config.read_text()
+    assert MANAGED_START not in text
+    assert MANAGED_END not in text
+    assert "set -gx KEEP_ME 1" in text
 
 
 def test_install_collapses_duplicate_managed_blocks_safely(tmp_path: Path, monkeypatch):
@@ -136,3 +180,17 @@ def test_root_managed_block_uses_exact_socket_and_root_mode(monkeypatch):
     assert "export TERM_COPILOT_USER='david'" in block
     assert "export TERM_COPILOT_HOME='/home/david'" in block
     assert "${TERM_COPILOT_SOCKET:-" not in block
+
+
+def test_root_fish_managed_block_uses_fish_syntax(monkeypatch):
+    monkeypatch.setenv("TERM_COPILOT_USER", "david")
+    monkeypatch.setenv("TERM_COPILOT_HOME", "/home/david")
+
+    block = _managed_block("fish", socket_path="/home/david/.cache/term-copilot/daemon.sock", root=True)
+
+    assert "set -gx TERM_COPILOT_SOCKET '/home/david/.cache/term-copilot/daemon.sock'" in block
+    assert "set -gx TERM_COPILOT_ROOT_MODE 1" in block
+    assert "set -gx TERM_COPILOT_USER 'david'" in block
+    assert "set -gx TERM_COPILOT_HOME '/home/david'" in block
+    assert "source" in block
+    assert "export " not in block
