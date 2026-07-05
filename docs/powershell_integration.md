@@ -2,7 +2,7 @@
 
 PowerShell support is a lightweight MVP. It provides explicit `Ctrl+F`
 suggestion insertion through PSReadLine when available. It does not provide
-ghost text, Named Pipe IPC, tab completion, or automatic command execution.
+ghost text, tab completion, or automatic command execution.
 
 ## Install
 
@@ -52,7 +52,14 @@ until explicit insertion is stable on Windows PowerShell 5.1 and PowerShell 7+.
 
 ## Transport
 
-The MVP uses local HTTP only:
+The adapter prefers Windows Named Pipe prediction transport when a pipe name is
+available:
+
+```text
+TERM_COPILOT_PIPE, or \\.\pipe\term-copilot-<user> for normal non-admin shells
+```
+
+If the pipe is unavailable, normal non-admin shells fall back to local HTTP:
 
 ```text
 TERM_COPILOT_HTTP_URL, or http://127.0.0.1:8765 by default
@@ -61,7 +68,8 @@ TERM_COPILOT_HTTP_URL, or http://127.0.0.1:8765 by default
 `TERM_COPILOT_URL` is also accepted for compatibility with the other adapters.
 Requests use a short timeout and fail silently when the daemon is unavailable.
 
-Named Pipe IPC is deferred. The adapter does not use external dependencies,
+Named Pipe IPC is prediction-only in this stage. `suggestion_accepted` events
+remain best-effort HTTP posts. The adapter does not use external dependencies,
 PowerShell modules, `socat`, `nc`, or provider APIs.
 
 ## Profile Path
@@ -124,8 +132,9 @@ Windows Terminal does not need separate integration; it launches PowerShell,
 which loads the selected profile according to normal PowerShell behavior.
 
 WSL should keep using the Linux shell adapters and Unix socket path. Native
-PowerShell should use the PowerShell profile path and local HTTP in this MVP.
-Crossing the WSL/native Windows boundary is not part of this stage.
+PowerShell should use the PowerShell profile path and Windows Named Pipe first,
+with local HTTP fallback. Crossing the WSL/native Windows boundary is not part
+of this stage.
 
 ## Execution Policy
 
@@ -148,12 +157,14 @@ The PowerShell adapter:
 
 Administrator mode is detected best-effort through Windows identity APIs or
 `TERM_COPILOT_ROOT_MODE=1`. Admin mode is sent as `root_mode=true`/`admin=true`.
-Admin shells do not auto-discover another user's daemon; use
-`TERM_COPILOT_HTTP_URL` explicitly for Administrator shell testing.
+Admin shells require an explicit endpoint. Set `TERM_COPILOT_PIPE` or
+`TERM_COPILOT_HTTP_URL`; the adapter will not silently use a guessed pipe or
+default HTTP URL from an Administrator shell.
 
 ## Manual Verification
 
 ```powershell
+$env:TERM_COPILOT_PIPE = "\\.\pipe\term-copilot-$env:USERNAME"
 $env:TERM_COPILOT_HTTP_URL = "http://127.0.0.1:8765"
 . .\powershell\terminal-copilot.ps1
 ```

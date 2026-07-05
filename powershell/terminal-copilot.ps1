@@ -54,6 +54,74 @@ function Test-TermCopilotAdmin {
     }
 }
 
+function Get-TermCopilotPipeName {
+    param(
+        [switch]$RequireExplicit
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($env:TERM_COPILOT_PIPE)) {
+        return $env:TERM_COPILOT_PIPE
+    }
+    if ($RequireExplicit) {
+        return $null
+    }
+
+    $identity = $env:TERM_COPILOT_USER_SID
+    if ([string]::IsNullOrWhiteSpace($identity)) {
+        $identity = $env:USERNAME
+    }
+    if ([string]::IsNullOrWhiteSpace($identity)) {
+        $identity = $env:USER
+    }
+    if ([string]::IsNullOrWhiteSpace($identity)) {
+        $identity = "user"
+    }
+
+    $safeIdentity = [regex]::Replace($identity.Trim(), "[^A-Za-z0-9_.-]+", "_").Trim("._-")
+    if ([string]::IsNullOrWhiteSpace($safeIdentity)) {
+        $safeIdentity = "user"
+    }
+    return "\\.\pipe\term-copilot-$safeIdentity"
+}
+
+function ConvertTo-TermCopilotPipeClientName {
+    param(
+        [Parameter(Mandatory = $true)][string]$PipeName
+    )
+
+    $prefix = "\\.\pipe\"
+    if ($PipeName.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        return $PipeName.Substring($prefix.Length)
+    }
+    return ($PipeName -replace "^[\\/]+", "")
+}
+
+function ConvertTo-TermCopilotBigEndianInt32 {
+    param(
+        [Parameter(Mandatory = $true)][int]$Value
+    )
+
+    [BitConverter]::GetBytes([Net.IPAddress]::HostToNetworkOrder($Value))
+}
+
+function Read-TermCopilotExactBytes {
+    param(
+        [Parameter(Mandatory = $true)]$Stream,
+        [Parameter(Mandatory = $true)][int]$Length
+    )
+
+    $buffer = [byte[]]::new($Length)
+    $offset = 0
+    while ($offset -lt $Length) {
+        $read = $Stream.Read($buffer, $offset, $Length - $offset)
+        if ($read -le 0) {
+            return $null
+        }
+        $offset += $read
+    }
+    return $buffer
+}
+
 function Get-TermCopilotUserName {
     if (-not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
         return $env:USERNAME
@@ -110,6 +178,78 @@ function New-TermCopilotPredictionPayload {
     }
 }
 
+function Invoke-TermCopilotPipeJsonPost {
+    param(
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [Parameter(Mandatory = $true)]$Payload
+    )
+
+    if ($Endpoint -ne "/predict") {
+        return $null
+    }
+
+    $client = $null
+    try {
+        $requireExplicit = $false
+        if ($null -ne $Payload -and $null -ne $Payload.root_mode) {
+            $requireExplicit = [bool]$Payload.root_mode
+        }
+
+        $pipeName = Get-TermCopilotPipeName -RequireExplicit:$requireExplicit
+        if ([string]::IsNullOrWhiteSpace($pipeName)) {
+            return $null
+        }
+
+        $pipeClientName = ConvertTo-TermCopilotPipeClientName -PipeName $pipeName
+        if ([string]::IsNullOrWhiteSpace($pipeClientName)) {
+            return $null
+        }
+
+        $body = $Payload | ConvertTo-Json -Depth 8 -Compress
+        $requestBytes = [Text.Encoding]::UTF8.GetBytes($body)
+        if ($requestBytes.Length -gt 8192) {
+            return $null
+        }
+
+        $timeoutMs = [Math]::Max(1, (Get-TermCopilotTimeoutSeconds)) * 1000
+        $client = [System.IO.Pipes.NamedPipeClientStream]::new(
+            ".",
+            $pipeClientName,
+            [System.IO.Pipes.PipeDirection]::InOut,
+            [System.IO.Pipes.PipeOptions]::None
+        )
+        $client.Connect([int]$timeoutMs)
+
+        $lengthBytes = ConvertTo-TermCopilotBigEndianInt32 -Value $requestBytes.Length
+        $client.Write($lengthBytes, 0, $lengthBytes.Length)
+        $client.Write($requestBytes, 0, $requestBytes.Length)
+        $client.Flush()
+
+        $header = Read-TermCopilotExactBytes -Stream $client -Length 4
+        if ($null -eq $header) {
+            return $null
+        }
+        $responseLength = [Net.IPAddress]::NetworkToHostOrder([BitConverter]::ToInt32($header, 0))
+        if ($responseLength -le 0 -or $responseLength -gt 8192) {
+            return $null
+        }
+
+        $responseBytes = Read-TermCopilotExactBytes -Stream $client -Length $responseLength
+        if ($null -eq $responseBytes) {
+            return $null
+        }
+
+        $responseJson = [Text.Encoding]::UTF8.GetString($responseBytes)
+        $responseJson | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return $null
+    } finally {
+        if ($null -ne $client) {
+            $client.Dispose()
+        }
+    }
+}
+
 function Invoke-TermCopilotJsonPost {
     param(
         [Parameter(Mandatory = $true)][string]$Endpoint,
@@ -117,6 +257,11 @@ function Invoke-TermCopilotJsonPost {
     )
 
     try {
+        $pipeResponse = Invoke-TermCopilotPipeJsonPost -Endpoint $Endpoint -Payload $Payload
+        if ($null -ne $pipeResponse) {
+            return $pipeResponse
+        }
+
         $requireExplicit = $false
         if ($null -ne $Payload -and $null -ne $Payload.root_mode) {
             $requireExplicit = [bool]$Payload.root_mode

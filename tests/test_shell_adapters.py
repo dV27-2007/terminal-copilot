@@ -452,15 +452,30 @@ def test_powershell_adapter_does_not_auto_execute_suggestions():
     assert "PSConsoleReadLine]::Insert" in text
 
 
-def test_powershell_adapter_uses_http_not_named_pipe():
+def test_powershell_adapter_prefers_pipe_before_http():
     text = read_plugin(POWERSHELL_PLUGIN)
 
+    assert "TERM_COPILOT_PIPE" in text
+    assert "NamedPipeClientStream" in text
+    assert "Invoke-TermCopilotPipeJsonPost" in text
     assert "TERM_COPILOT_HTTP_URL" in text
     assert "http://127.0.0.1:8765" in text
     assert 'Invoke-TermCopilotJsonPost -Endpoint "/predict"' in text
     assert "Invoke-RestMethod" in text
-    assert "NamedPipe" not in text
-    assert "\\\\.\\pipe" not in text
+    post_function = text[text.index("function Invoke-TermCopilotJsonPost") :]
+    assert post_function.index("Invoke-TermCopilotPipeJsonPost -Endpoint $Endpoint -Payload $Payload") < post_function.index("Get-TermCopilotHttpUrl")
+    assert "\\\\.\\pipe" in text
+
+
+def test_powershell_adapter_admin_mode_requires_explicit_endpoint():
+    text = read_plugin(POWERSHELL_PLUGIN)
+
+    assert "Get-TermCopilotPipeName" in text
+    assert "Get-TermCopilotHttpUrl" in text
+    assert "RequireExplicit" in text
+    assert 'if ($RequireExplicit)' in text
+    assert "TERM_COPILOT_PIPE" in text
+    assert "TERM_COPILOT_HTTP_URL" in text
 
 
 def test_powershell_adapter_has_admin_and_payload_metadata():

@@ -18,6 +18,12 @@ from .config import load_settings
 from .ipc import PROTOCOL_VERSION, UnixSocketPredictionServer, request_prediction, unix_socket_supported
 from .models import PredictRequest
 from .predictor import Predictor
+from .windows_ipc import (
+    WindowsNamedPipePredictionServer,
+    default_pipe_name,
+    request_prediction_pipe,
+    windows_named_pipe_supported,
+)
 
 try:
     import pwd
@@ -53,6 +59,24 @@ def start_ipc_server(args: argparse.Namespace, settings) -> UnixSocketPrediction
     return server
 
 
+def start_windows_pipe_server(args: argparse.Namespace, settings) -> WindowsNamedPipePredictionServer | None:
+    pipe_requested = bool(args.pipe or os.getenv("TERM_COPILOT_PIPE"))
+    if args.no_pipe:
+        return None
+    if not windows_named_pipe_supported():
+        if pipe_requested:
+            print("term-copilot: Windows Named Pipe IPC unavailable on this platform", file=sys.stderr)
+        return None
+    pipe_name = args.pipe or default_pipe_name()
+    server = WindowsNamedPipePredictionServer(Predictor(settings=settings), pipe_name)
+    try:
+        server.start_in_thread()
+    except OSError as exc:
+        print(f"term-copilot: Windows Named Pipe IPC unavailable: {exc}", file=sys.stderr)
+        return None
+    return server
+
+
 def run_daemon(args: argparse.Namespace) -> int:
     try:
         import uvicorn
@@ -61,6 +85,7 @@ def run_daemon(args: argparse.Namespace) -> int:
         return 2
     settings = load_settings(args.config_dir)
     ipc_server = start_ipc_server(args, settings)
+    pipe_server = start_windows_pipe_server(args, settings)
     host = args.host or settings.daemon.host
     port = args.port or settings.daemon.port
     try:
@@ -68,6 +93,8 @@ def run_daemon(args: argparse.Namespace) -> int:
     finally:
         if ipc_server is not None:
             ipc_server.stop()
+        if pipe_server is not None:
+            pipe_server.stop()
     return 0
 
 
@@ -384,6 +411,20 @@ def _http_status(url: str) -> tuple[bool, str]:
         return False, f"unreachable: {exc}"
 
 
+def _pipe_status(pipe_name: str, *, cwd: str | None = None) -> tuple[bool, str]:
+    if not windows_named_pipe_supported():
+        return False, "unsupported"
+    try:
+        request_prediction_pipe(
+            pipe_name,
+            {"protocol_version": PROTOCOL_VERSION, "buffer": "", "cursor": 0, "cwd": cwd or os.getcwd(), "shell": "status"},
+            timeout=0.2,
+        )
+    except Exception as exc:
+        return False, f"unreachable: {exc}"
+    return True, "reachable"
+
+
 def _current_euid() -> int | None:
     try:
         return os.geteuid()
@@ -428,10 +469,14 @@ def status(args: argparse.Namespace) -> int:
     settings = load_settings(args.config_dir)
     socket_path = _default_socket_path(settings)
     http_url = _http_url(settings)
+    pipe_name = os.getenv("TERM_COPILOT_PIPE") or default_pipe_name()
     socket_ok, socket_msg = _socket_status(socket_path)
     http_ok, http_msg = _http_status(http_url)
+    pipe_ok, pipe_msg = _pipe_status(pipe_name)
     if socket_ok:
         mode = "Unix socket"
+    elif pipe_ok:
+        mode = "Windows Named Pipe"
     elif http_ok:
         mode = "HTTP fallback"
     else:
@@ -445,10 +490,15 @@ def status(args: argparse.Namespace) -> int:
     powershell_profile = _powershell_profile_path()
     powershell_blocks = _managed_block_count(powershell_profile)
 
-    print(f"daemon reachable: {'yes' if socket_ok or http_ok else 'no'}")
+    print(f"daemon reachable: {'yes' if socket_ok or pipe_ok or http_ok else 'no'}")
     print(f"IPC mode: {mode}")
+    print(f"platform: {sys.platform}")
     print(f"socket path: {socket_path}")
     print(f"socket status: {socket_msg}")
+    print(f"Windows Named Pipe supported: {'yes' if windows_named_pipe_supported() else 'no'}")
+    print(f"TERM_COPILOT_PIPE set: {'yes' if os.getenv('TERM_COPILOT_PIPE') else 'no'}")
+    print(f"Windows Named Pipe name: {pipe_name}")
+    print(f"Windows Named Pipe status: {pipe_msg}")
     print(f"HTTP URL: {http_url}")
     print(f"HTTP status: {http_msg}")
     print(f"DB path: {db_path}")
@@ -482,6 +532,7 @@ def doctor(args: argparse.Namespace) -> int:
     failures += int(failed)
 
     _doctor_line("PASS", f"effective uid: {euid if euid is not None else 'unknown'}")
+    _doctor_line("PASS", f"platform: {sys.platform}")
     _doctor_line("PASS" if not root_mode or os.getenv("TERM_COPILOT_ROOT_MODE") == "1" or euid == 0 else "WARN", f"root mode: {'enabled' if root_mode else 'disabled'}")
     socket_env = os.getenv("TERM_COPILOT_SOCKET")
     _doctor_line("PASS" if socket_env else "WARN", f"TERM_COPILOT_SOCKET set: {'yes' if socket_env else 'no'}")
@@ -526,6 +577,14 @@ def doctor(args: argparse.Namespace) -> int:
     permission = _socket_permission_message(socket_path, euid=euid)
     if permission:
         _doctor_line(*permission)
+
+    pipe_name = os.getenv("TERM_COPILOT_PIPE") or default_pipe_name()
+    pipe_supported = windows_named_pipe_supported()
+    _doctor_line("PASS" if pipe_supported else "WARN", f"Windows Named Pipe support: {'available' if pipe_supported else 'unavailable'}")
+    _doctor_line("PASS" if os.getenv("TERM_COPILOT_PIPE") else "WARN", f"TERM_COPILOT_PIPE set: {'yes' if os.getenv('TERM_COPILOT_PIPE') else 'no'}")
+    _doctor_line("PASS", f"Windows Named Pipe name: {pipe_name}")
+    pipe_ok, pipe_msg = _pipe_status(pipe_name)
+    _doctor_line("PASS" if pipe_ok else "WARN", f"Windows Named Pipe {pipe_msg}: {pipe_name}")
 
     http_url = _http_url(settings)
     http_ok, http_msg = _http_status(http_url)
@@ -659,7 +718,9 @@ def main(argv: list[str] | None = None) -> int:
     p_daemon.add_argument("--port", type=int, default=None)
     p_daemon.add_argument("--log-level", default="warning")
     p_daemon.add_argument("--socket", default=None)
+    p_daemon.add_argument("--pipe", default=None)
     p_daemon.add_argument("--no-ipc", action="store_true")
+    p_daemon.add_argument("--no-pipe", action="store_true")
     p_daemon.set_defaults(func=run_daemon)
 
     p_predict = sub.add_parser("predict")

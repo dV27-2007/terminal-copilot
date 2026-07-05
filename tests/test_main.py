@@ -78,6 +78,7 @@ def test_status_reports_powershell_profile_facts(tmp_path: Path, monkeypatch, ca
     configure_temp_home(tmp_path, monkeypatch)
     profile = tmp_path / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
     monkeypatch.setenv("TERM_COPILOT_POWERSHELL_PROFILE", str(profile))
+    monkeypatch.setenv("TERM_COPILOT_PIPE", r"\\.\pipe\term-copilot-test")
 
     assert main(["install", "--shell", "powershell"]) == 0
     assert main(["status"]) == 0
@@ -86,6 +87,9 @@ def test_status_reports_powershell_profile_facts(tmp_path: Path, monkeypatch, ca
     assert f"PowerShell profile path: {profile}" in output
     assert "PowerShell profile exists: yes" in output
     assert "powershell blocks=1" in output
+    assert "Windows Named Pipe supported: no" in output
+    assert "TERM_COPILOT_PIPE set: yes" in output
+    assert r"Windows Named Pipe name: \\.\pipe\term-copilot-test" in output
 
 
 def test_doctor_handles_missing_daemon_without_crashing(tmp_path: Path, monkeypatch, capsys):
@@ -106,6 +110,7 @@ def test_doctor_reports_powershell_profile_without_requiring_powershell(tmp_path
     configure_temp_home(tmp_path, monkeypatch)
     profile = tmp_path / "PowerShell" / "profile.ps1"
     monkeypatch.setenv("TERM_COPILOT_POWERSHELL_PROFILE", str(profile))
+    monkeypatch.setenv("TERM_COPILOT_PIPE", r"\\.\pipe\term-copilot-test")
 
     assert main(["doctor"]) == 0
 
@@ -113,6 +118,9 @@ def test_doctor_reports_powershell_profile_without_requiring_powershell(tmp_path
     assert f"PowerShell profile does not exist: {profile}" in output
     assert "PowerShell adapter file:" in output
     assert "PowerShell executable" in output
+    assert "Windows Named Pipe support: unavailable" in output
+    assert "TERM_COPILOT_PIPE set: yes" in output
+    assert r"Windows Named Pipe name: \\.\pipe\term-copilot-test" in output
 
 
 def test_install_zsh_managed_block_is_idempotent_and_backed_up(tmp_path: Path, monkeypatch):

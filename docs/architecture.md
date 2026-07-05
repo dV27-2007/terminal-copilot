@@ -5,7 +5,7 @@ Runtime path:
 ```text
 zsh/bash/fish/PowerShell input
   -> shell integration
-  -> local daemon over Unix socket or HTTP fallback
+  -> local daemon over Unix socket, Windows Named Pipe, or HTTP fallback
   -> context detector
   -> history/project candidates
   -> scoring + safety
@@ -19,6 +19,7 @@ The shell integration is not the brain. It only captures the current buffer, cwd
 
 - `daemon/server.py`: FastAPI daemon API.
 - `daemon/ipc.py`: lightweight Unix socket prediction API for Linux/macOS.
+- `daemon/windows_ipc.py`: lightweight Windows Named Pipe prediction API.
 - `daemon/predictor.py`: pipeline coordinator.
 - `daemon/history_store.py`: SQLite command memory.
 - `daemon/cache_store.py`: SQLite suggestion cache.
@@ -71,16 +72,22 @@ targets, and interpretation guidance.
 
 ## Local IPC
 
-The daemon now starts a Unix domain socket prediction endpoint on POSIX systems
+The daemon starts a Unix domain socket prediction endpoint on POSIX systems
 alongside the existing HTTP API. The default socket path is
 `~/.cache/term-copilot/daemon.sock`, or `$TERM_COPILOT_SOCKET` when set. The
 socket file is created with owner-only permissions.
 
-The socket protocol is newline-delimited JSON. Each connection sends one request
-line and receives one response line. Requests are size-limited and handled with a
-strict timeout; invalid JSON, oversized payloads and internal errors return an
-empty safe suggestion with an `error`/`reason` field instead of crashing the
-daemon.
+On native Windows, the daemon can also start a Windows Named Pipe prediction
+endpoint. The pipe name uses `$TERM_COPILOT_PIPE` when set, otherwise a
+user-scoped name such as `\\.\pipe\term-copilot-<user>`. Non-Windows platforms
+report this transport as unsupported without failing.
+
+The Unix socket protocol is newline-delimited JSON. The Windows Named Pipe
+transport uses the same JSON payload and response shape with a small length
+prefix compatible with Python's standard-library `multiprocessing.connection`
+pipe framing. Requests are size-limited and handled with a strict timeout;
+invalid JSON, oversized payloads and internal errors return an empty safe
+suggestion with an `error`/`reason` field instead of crashing the daemon.
 
 Minimum prediction request:
 
@@ -95,9 +102,10 @@ The response preserves the existing prediction fields:
 ```
 
 HTTP on `127.0.0.1:8765` remains available as a compatibility fallback. The zsh
-prediction adapter uses the socket path first and falls back to HTTP only when
-the socket is unavailable. Command/event recording still uses the existing HTTP
-event endpoint.
+prediction adapter uses the Unix socket path first and falls back to HTTP only
+when the socket is unavailable. Native PowerShell uses Windows Named Pipe first
+when configured/derivable, then HTTP fallback for non-admin shells. Command/event
+recording still uses the existing HTTP event endpoint.
 
 The zsh adapter uses zsh socket modules for prediction, so the socket hot path
 does not spawn Python. It clears stale suggestion state before each prediction
@@ -108,8 +116,10 @@ text. Bash and fish record command execution where reliable. PowerShell records
 `suggestion_accepted` after insertion; `command_executed` is deferred until it
 can be captured without false positives.
 
-The PowerShell MVP uses local HTTP only. Native Windows Named Pipe IPC is
-deferred.
+The PowerShell MVP uses Windows Named Pipe for prediction when available and
+local HTTP as fallback. Native Windows event posting remains HTTP-only in this
+stage. WSL should continue to use the POSIX shell adapters and Unix socket path;
+the project does not automatically bridge WSL shells to native Windows pipes.
 
 ## Root And Session Context
 

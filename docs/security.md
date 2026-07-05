@@ -15,6 +15,8 @@ Implemented baseline:
 - optional AI fallback sends only minimal redacted prediction context when
   explicitly enabled;
 - command history is local SQLite by default.
+- Windows Named Pipe IPC is local-only and uses a user-scoped pipe name by
+  default when available.
 
 Blocked or risky patterns include:
 
@@ -80,6 +82,18 @@ daemon only when the shell environment or root install block explicitly sets
 `TERM_COPILOT_ROOT_MODE=1`. Root shell adapters fail silently when this socket is
 missing; they do not guess a user's home directory and do not send prediction
 requests to HTTP fallback in root mode.
+
+Native PowerShell follows the same rule for Administrator shells. Admin mode is
+sent as `root_mode=true`/`admin=true`; the adapter requires an explicit
+`TERM_COPILOT_PIPE` or `TERM_COPILOT_HTTP_URL` and does not silently attach to a
+guessed user pipe or default HTTP endpoint. Normal non-admin PowerShell can use
+the user-scoped default pipe and then local HTTP fallback.
+
+The Windows pipe protocol carries only the same prediction JSON fields as other
+local transports: current buffer, cursor, cwd, shell, root/admin/session
+metadata. It does not send terminal scrollback, `.env` contents, command
+history, raw logs, or provider credentials. Suggestions are still inserted only
+through explicit user action and are never executed automatically.
 
 Before enabling real cloud fallback in regular use, enforce:
 
