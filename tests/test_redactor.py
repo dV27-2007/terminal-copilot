@@ -11,3 +11,12 @@ def test_redacts_password_and_tokens():
 
 def test_non_secret_command_is_allowed():
     assert not contains_secret("docker compose logs -f backend")
+
+
+def test_redacts_raw_database_urls_and_bearer_tokens():
+    text = "psql postgres://user:pass@localhost/db -c 'select 1' && curl -H 'Bearer abcdefghijklmnopqrstuvwxyz123456'"
+    redacted = redact_text(text)
+
+    assert "user:pass" not in redacted
+    assert "abcdefghijklmnopqrstuvwxyz" not in redacted
+    assert contains_secret(text)

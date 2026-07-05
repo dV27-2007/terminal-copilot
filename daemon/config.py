@@ -56,6 +56,8 @@ class PredictionSettings:
 class AISettings:
     enabled: bool = False
     provider: str = "gemini"
+    model: str = "gemini-1.5-flash"
+    api_key_env: str = "GEMINI_API_KEY"
     timeout_ms: int = 1500
     max_input_chars: int = 2000
     max_recent_commands: int = 10
@@ -88,6 +90,7 @@ def load_settings(config_dir: str | Path | None = None) -> Settings:
 
     defaults_path = config_dir / "defaults.yaml"
     rules_path = config_dir / "rules.yaml"
+    providers_path = config_dir / "providers.yaml"
 
     if yaml and defaults_path.exists():
         raw = yaml.safe_load(defaults_path.read_text()) or {}
@@ -97,6 +100,24 @@ def load_settings(config_dir: str | Path | None = None) -> Settings:
                 for key, value in raw[section].items():
                     if hasattr(current, key):
                         setattr(current, key, value)
+
+    settings.ai.provider = os.getenv("TERM_COPILOT_AI_PROVIDER", settings.ai.provider)
+
+    if yaml and providers_path.exists():
+        raw = yaml.safe_load(providers_path.read_text()) or {}
+        providers = raw.get("providers") if isinstance(raw, dict) else None
+        selected = providers.get(settings.ai.provider) if isinstance(providers, dict) else None
+        if isinstance(selected, dict):
+            if "enabled" in selected:
+                settings.ai.enabled = bool(selected["enabled"])
+            if isinstance(selected.get("model"), str):
+                settings.ai.model = str(selected["model"])
+            if isinstance(selected.get("api_key_env"), str):
+                settings.ai.api_key_env = str(selected["api_key_env"])
+            if isinstance(selected.get("timeout_ms"), int):
+                settings.ai.timeout_ms = int(selected["timeout_ms"])
+            if isinstance(selected.get("max_input_chars"), int):
+                settings.ai.max_input_chars = int(selected["max_input_chars"])
 
     if yaml and rules_path.exists():
         raw = yaml.safe_load(rules_path.read_text()) or {}
@@ -111,4 +132,11 @@ def load_settings(config_dir: str | Path | None = None) -> Settings:
     settings.daemon.socket_path = _expand(os.getenv("TERM_COPILOT_SOCKET", settings.daemon.socket_path))
     settings.daemon.host = os.getenv("TERM_COPILOT_HOST", settings.daemon.host)
     settings.daemon.port = int(os.getenv("TERM_COPILOT_PORT", settings.daemon.port))
+    if "TERM_COPILOT_AI_ENABLED" in os.environ:
+        settings.ai.enabled = os.getenv("TERM_COPILOT_AI_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+    settings.ai.provider = os.getenv("TERM_COPILOT_AI_PROVIDER", settings.ai.provider)
+    settings.ai.model = os.getenv("TERM_COPILOT_AI_MODEL", settings.ai.model)
+    settings.ai.api_key_env = os.getenv("TERM_COPILOT_AI_API_KEY_ENV", settings.ai.api_key_env)
+    settings.ai.timeout_ms = int(os.getenv("TERM_COPILOT_AI_TIMEOUT_MS", settings.ai.timeout_ms))
+    settings.ai.max_input_chars = int(os.getenv("TERM_COPILOT_AI_MAX_INPUT_CHARS", settings.ai.max_input_chars))
     return settings

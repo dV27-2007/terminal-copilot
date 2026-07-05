@@ -12,7 +12,8 @@ Implemented baseline:
 - root shell prediction requires an explicit `TERM_COPILOT_SOCKET` and does not
   use HTTP fallback;
 - AI is disabled by default;
-- AI client stub redacts payload before provider calls are added;
+- optional AI fallback sends only minimal redacted prediction context when
+  explicitly enabled;
 - command history is local SQLite by default.
 
 Blocked or risky patterns include:
@@ -46,7 +47,21 @@ not blocked as destructive SQL.
 Root mode keeps the same response format but uses stronger penalties for caution
 commands involving `rm`, `chmod`, `chown`, `dd`, `mkfs`, Docker system/volume
 mutation and mount operations. AI remains disabled by default; if an AI source is
-ever enabled, root mode rejects non-safe AI suggestions.
+enabled, root mode rejects non-safe AI suggestions.
+
+Optional AI fallback is gated behind local prediction checks. The daemon rejects
+secret-looking buffers before context building, only calls AI after local
+history, project-context, and cache candidates are weak, and requires an
+available configured provider. AI payloads include the current buffer and shallow
+cwd/project metadata only; terminal scrollback is not sent. Redaction is applied
+before provider calls, and list values that still contain redaction markers are
+dropped rather than sent with placeholder secrets.
+
+AI responses must be strict JSON. Markdown, explanations, non-continuations,
+dangerous output, secret-looking output, and invalid confidence/risk fields are
+discarded before ghost text is returned. Accepted AI responses still pass through
+the normal continuation, command-like, safety, root-mode, and cache-validation
+checks.
 
 The daemon should normally run as the regular user. A root shell can use that
 daemon only when the shell environment or root install block explicitly sets
@@ -55,7 +70,8 @@ daemon only when the shell environment or root install block explicitly sets
 missing; they do not guess a user's home directory and do not send prediction
 requests to HTTP fallback in root mode.
 
-Before enabling real cloud fallback, enforce:
+Before enabling real cloud fallback beyond the current local-only fake provider,
+enforce:
 
 - client-side redaction;
 - server-side redaction verification;

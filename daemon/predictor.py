@@ -33,7 +33,7 @@ class Predictor:
         self.history = history or HistoryStore(self.settings.daemon.db_path)
         self.cache = cache or CacheStore(self.settings.daemon.db_path)
         self.safety = SafetyPolicy(self.settings.dangerous_patterns)
-        self.ai_client = ai_client or AIClient(enabled=self.settings.ai.enabled)
+        self.ai_client = ai_client or AIClient.from_settings(self.settings)
 
     def predict(self, request: PredictRequest) -> Suggestion:
         cursor = request.cursor if request.cursor is not None else len(request.buffer)
@@ -153,10 +153,14 @@ class Predictor:
             return False
         if not ghost_from_full(context.buffer, suggestion.full_command):
             return False
+        if source == "ai" and not is_command_like(suggestion.full_command, self.settings, self.history):
+            return False
         return self.safety.is_allowed_suggestion(suggestion.full_command, buffer=context.buffer, root_mode=context.root_mode, source=source)
 
     def _should_call_ai(self, context: CommandContext, ranked: list[tuple[Candidate, float]]) -> bool:
         if not self.settings.ai.enabled:
+            return False
+        if not self.ai_client.available():
             return False
         if len(context.buffer.strip()) < max(4, self.settings.prediction.min_buffer_length):
             return False
@@ -166,6 +170,8 @@ class Predictor:
             return False
         safety = self.safety.classify(context.buffer, buffer=context.buffer, root_mode=context.root_mode, source="user")
         if safety.risk == "dangerous":
+            return False
+        if context.root_mode and safety.risk != "safe":
             return False
         return True
 

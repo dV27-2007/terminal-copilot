@@ -230,6 +230,31 @@ checks. Cache candidates use a stricter confidence threshold than weak local
 fallbacks, and strong same-context successful history is considered before cache
 lookup.
 
+## Optional AI Fallback
+
+AI completion is disabled by default and is never part of the shell hot path
+unless the daemon settings explicitly enable it. The predictor only reaches the
+AI path after secret detection, command-like detection, local history/project
+ranking, and cache lookup have failed to produce a strong suggestion.
+
+The AI request is built inside `daemon/ai_client.py` from minimal context:
+current command buffer, cursor, shell, root mode, project type, shallow project
+signals such as Docker services or package scripts, and a small set of recent
+successful commands. The request does not include terminal scrollback. Payloads
+are redacted before provider calls, and any context value that still required
+secret redaction is dropped from list fields.
+
+Responses must be strict JSON with a command continuation and numeric
+confidence. Markdown, explanations, non-continuations, dangerous suggestions,
+secret-looking output, and invalid risk values are rejected. Accepted AI
+suggestions are then passed back through the normal predictor validation,
+command-like gate, safety policy, root-mode rules, and cache validation. In root
+mode, AI-sourced suggestions must classify as `safe`.
+
+The current implementation includes a local-only `fake` provider for tests and
+manual validation. Non-fake providers remain unconfigured unless API-key-backed
+provider implementations are added later.
+
 `daemon/context_detector.py` treats input as command-like when the first token is
 on `PATH`, is a known local tool, is present in command history, is a close known
 tool typo, or the buffer starts with a known multi-token command such as

@@ -8,7 +8,9 @@ SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?i)((?:password|passwd|pwd)\s*=\s*)[^\s]+"), r"\1<REDACTED>"),
     (re.compile(r"(?i)((?:token|access_token|refresh_token|api_key|apikey)\s*=\s*)[^\s]+"), r"\1<REDACTED>"),
     (re.compile(r"(?i)(Authorization:\s*Bearer\s+)[A-Za-z0-9._~+\-/]+=*"), r"\1<REDACTED>"),
+    (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+\-/]{10,}=*"), r"\1<REDACTED>"),
     (re.compile(r"(?i)((?:DATABASE_URL|POSTGRES_URL|MYSQL_URL|CLICKHOUSE_PASSWORD|KERNEL_OPROJECT_TOKEN|AWS_SECRET_ACCESS_KEY|OPENAI_API_KEY|GEMINI_API_KEY|GROQ_API_KEY)\s*=\s*)[^\s]+"), r"\1<REDACTED>"),
+    (re.compile(r"(?i)([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^@\s]+@"), r"\1<REDACTED>@"),
     (re.compile(r"[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}"), "<JWT_REDACTED>"),
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S), "<PRIVATE_KEY_REDACTED>"),
 ]

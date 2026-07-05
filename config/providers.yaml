@@ -3,13 +3,26 @@ providers:
     enabled: false
     api_key_env: "GEMINI_API_KEY"
     model: "gemini-1.5-flash"
+    timeout_ms: 1500
+    max_input_chars: 2000
 
   groq:
     enabled: false
     api_key_env: "GROQ_API_KEY"
     model: "llama-3.1-8b-instant"
+    timeout_ms: 1500
+    max_input_chars: 2000
 
   openrouter:
     enabled: false
     api_key_env: "OPENROUTER_API_KEY"
     model: "openrouter/free"
+    timeout_ms: 1500
+    max_input_chars: 2000
+
+  fake:
+    enabled: false
+    api_key_env: ""
+    model: "fake-inline-completion"
+    timeout_ms: 50
+    max_input_chars: 2000

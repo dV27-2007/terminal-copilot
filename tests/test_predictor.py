@@ -9,6 +9,22 @@ from daemon.predictor import Predictor
 from daemon.project_detector import clear_project_cache
 
 
+class SpyAIClient:
+    def __init__(self, suggestion: Suggestion | None = None, *, available: bool = True):
+        self.suggestion = suggestion or Suggestion("gs -f backend", "docker compose logs -f backend", "ai", 0.9, "safe")
+        self._available = available
+        self.calls = 0
+        self.contexts = []
+
+    def available(self) -> bool:
+        return self._available
+
+    def complete(self, context):
+        self.calls += 1
+        self.contexts.append(context)
+        return self.suggestion
+
+
 def make_predictor(tmp_path: Path) -> Predictor:
     settings = Settings()
     settings.daemon.db_path = str(tmp_path / "history.sqlite3")
@@ -16,6 +32,16 @@ def make_predictor(tmp_path: Path) -> Predictor:
     history = HistoryStore(settings.daemon.db_path)
     cache = CacheStore(settings.daemon.db_path)
     return Predictor(settings=settings, history=history, cache=cache)
+
+
+def make_ai_predictor(tmp_path: Path, ai_client: SpyAIClient, *, enabled: bool = True) -> Predictor:
+    settings = Settings()
+    settings.daemon.db_path = str(tmp_path / "history.sqlite3")
+    settings.ai.enabled = enabled
+    settings.ai.provider = "fake"
+    history = HistoryStore(settings.daemon.db_path)
+    cache = CacheStore(settings.daemon.db_path)
+    return Predictor(settings=settings, history=history, cache=cache, ai_client=ai_client)  # type: ignore[arg-type]
 
 
 def setup_function():
@@ -154,6 +180,98 @@ def test_cache_suggestion_does_not_beat_strong_same_context_history_without_sign
     suggestion = predictor.predict(request)
 
     assert suggestion.full_command == "docker compose ps"
+
+
+def test_ai_disabled_by_default_means_no_provider_call(tmp_path: Path):
+    ai = SpyAIClient()
+    predictor = make_ai_predictor(tmp_path, ai, enabled=False)
+
+    suggestion = predictor.predict(PredictRequest(buffer="docker compose lo", cwd=str(tmp_path), shell="zsh"))
+
+    assert ai.calls == 0
+    assert suggestion.full_command == ""
+
+
+def test_ai_not_called_when_local_candidate_is_strong(tmp_path: Path):
+    ai = SpyAIClient()
+    predictor = make_ai_predictor(tmp_path, ai)
+    predictor.record_command("docker compose logs -f backend", cwd=str(tmp_path), exit_code=0, duration_ms=100)
+
+    suggestion = predictor.predict(PredictRequest(buffer="docker compose lo", cwd=str(tmp_path), shell="zsh"))
+
+    assert ai.calls == 0
+    assert suggestion.source == "history"
+
+
+def test_ai_not_called_when_cache_candidate_is_strong(tmp_path: Path):
+    ai = SpyAIClient()
+    predictor = make_ai_predictor(tmp_path, ai)
+    request = PredictRequest(buffer="docker compose lo", cwd=str(tmp_path), shell="zsh")
+    context = build_context(request, predictor.settings, predictor.history)
+    predictor.cache.save(context, Suggestion("gs -f backend", "docker compose logs -f backend", "project_context", 0.95, "safe"))
+
+    suggestion = predictor.predict(request)
+
+    assert ai.calls == 0
+    assert suggestion.source == "cache"
+
+
+def test_ai_not_called_for_natural_language_secret_too_short_or_dangerous(tmp_path: Path):
+    ai = SpyAIClient()
+    predictor = make_ai_predictor(tmp_path, ai)
+
+    for buffer in (
+        "what is docker",
+        "export OPENAI_API_KEY=abc",
+        "d",
+        "rm -rf /",
+    ):
+        suggestion = predictor.predict(PredictRequest(buffer=buffer, cwd=str(tmp_path), shell="zsh"))
+        assert suggestion.full_command == ""
+
+    assert ai.calls == 0
+
+
+def test_ai_not_called_without_available_provider_or_key(tmp_path: Path):
+    ai = SpyAIClient(available=False)
+    predictor = make_ai_predictor(tmp_path, ai)
+
+    suggestion = predictor.predict(PredictRequest(buffer="docker compose lo", cwd=str(tmp_path), shell="zsh"))
+
+    assert ai.calls == 0
+    assert suggestion.full_command == ""
+
+
+def test_ai_called_when_enabled_local_is_weak_and_input_is_command_like(tmp_path: Path):
+    ai = SpyAIClient()
+    predictor = make_ai_predictor(tmp_path, ai)
+
+    suggestion = predictor.predict(PredictRequest(buffer="docker compose lo", cwd=str(tmp_path), shell="zsh"))
+
+    assert ai.calls == 1
+    assert ai.contexts[0].buffer == "docker compose lo"
+    assert suggestion.full_command == "docker compose logs -f backend"
+    assert suggestion.source == "ai"
+
+
+def test_safe_ai_suggestion_is_cached_after_acceptance_path(tmp_path: Path):
+    ai = SpyAIClient()
+    predictor = make_ai_predictor(tmp_path, ai)
+
+    suggestion = predictor.predict(PredictRequest(buffer="docker compose lo", cwd=str(tmp_path), shell="zsh"))
+
+    assert suggestion.source == "ai"
+    assert predictor.cache.get_entry("docker compose logs -f backend") is not None
+
+
+def test_ai_root_mode_rejects_caution_suggestion(tmp_path: Path):
+    ai = SpyAIClient(Suggestion("own", "docker compose down", "ai", 0.9, "caution"))
+    predictor = make_ai_predictor(tmp_path, ai)
+
+    suggestion = predictor.predict(PredictRequest(buffer="docker compose d", cwd=str(tmp_path), shell="zsh", root_mode=True, effective_uid=0))
+
+    assert ai.calls == 1
+    assert suggestion.full_command == ""
 
 
 def test_cursor_buffer_is_clamped_and_ghost_text_is_suffix_only(tmp_path: Path):
