@@ -1,0 +1,13 @@
+[package]
+name = "terminal-copilot-native-terminal"
+version = "0.1.0"
+edition = "2021"
+description = "Native terminal foundation for terminal-copilot"
+
+[lib]
+name = "terminal_copilot_native_terminal"
+path = "src/lib.rs"
+
+[[bin]]
+name = "native-terminal"
+path = "src/main.rs"

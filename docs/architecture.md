@@ -13,7 +13,29 @@ zsh/bash/fish/PowerShell input
   -> ghost suggestion
 ```
 
-The shell integration is not the brain. It only captures the current buffer, cwd, shell/user/root metadata and sends it to the daemon. The daemon owns history, scoring, safety, cache and AI validation.
+Future native terminal path:
+
+```text
+native-terminal Rust app
+  -> native terminal core / renderer / PTY session
+  -> local Python intelligence engine over IPC for suggestions
+```
+
+The shell integration is not the brain. It only captures the current buffer,
+cwd, shell/user/root metadata and sends it to the daemon. The daemon owns
+history, scoring, safety, cache and AI validation. The new Rust terminal is the
+future main product layer, while shell plugins remain compatibility
+integrations.
+
+## Product Layers
+
+- Python engine: local prediction, storage, project context, safety, redaction,
+  optional AI validation, CLI tooling and compatibility daemon APIs.
+- Shell plugins: zsh/bash/fish/PowerShell integrations for users who keep using
+  existing terminal emulators.
+- Rust native terminal: new custom terminal application layer under
+  `native-terminal/`. Stage 17 owns only the terminal core model and headless
+  demo; GUI rendering and real PTY sessions are deferred.
 
 ## Runtime modules
 
@@ -32,6 +54,8 @@ The shell integration is not the brain. It only captures the current buffer, cwd
 - `bash/terminal-copilot.bash`: bash fallback.
 - `fish/terminal-copilot.fish`: fish Ctrl+F fallback.
 - `powershell/terminal-copilot.ps1`: PowerShell Ctrl+F fallback.
+- `native-terminal/`: Rust native terminal foundation with a testable grid,
+  cursor, scrollback, parser boundary and placeholder PTY boundary.
 
 ## CLI Tooling
 
