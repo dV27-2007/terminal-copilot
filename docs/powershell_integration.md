@@ -1,8 +1,8 @@
 # PowerShell Integration
 
-PowerShell support is currently profile-management only. The runtime adapter is
-deferred, so this stage does not add keybindings, PSReadLine integration, Named
-Pipe IPC, ghost text, or command/event recording from PowerShell.
+PowerShell support is a lightweight MVP. It provides explicit `Ctrl+F`
+suggestion insertion through PSReadLine when available. It does not provide
+ghost text, Named Pipe IPC, tab completion, or automatic command execution.
 
 ## Install
 
@@ -20,7 +20,7 @@ keeps exactly one managed block:
 # <<< term-copilot init <<<
 ```
 
-The managed block is safe before the runtime adapter exists:
+The managed block dot-sources the runtime adapter only when it exists:
 
 ```powershell
 $TermCopilotAdapter = "<repo>\powershell\terminal-copilot.ps1"
@@ -28,6 +28,41 @@ if (Test-Path -LiteralPath $TermCopilotAdapter) { . $TermCopilotAdapter }
 ```
 
 If the adapter file is missing, PowerShell startup remains quiet.
+
+## Runtime UX
+
+When PSReadLine is available, the adapter binds `Ctrl+F`:
+
+```powershell
+Set-PSReadLineKeyHandler -Chord "Ctrl+f"
+```
+
+Pressing `Ctrl+F` requests one prediction for the current command line. If the
+daemon returns a valid continuation, the adapter inserts only the suffix needed
+to complete the current line. It does not press Enter and does not execute the
+suggestion.
+
+If PSReadLine is unavailable, the adapter still defines
+`Invoke-TermCopilotSuggestion`, but profile load stays silent and no keybinding
+is installed.
+
+The MVP intentionally does not implement PowerShell ghost text. Ghost text
+requires a more careful PSReadLine version matrix and should remain deferred
+until explicit insertion is stable on Windows PowerShell 5.1 and PowerShell 7+.
+
+## Transport
+
+The MVP uses local HTTP only:
+
+```text
+TERM_COPILOT_HTTP_URL, or http://127.0.0.1:8765 by default
+```
+
+`TERM_COPILOT_URL` is also accepted for compatibility with the other adapters.
+Requests use a short timeout and fail silently when the daemon is unavailable.
+
+Named Pipe IPC is deferred. The adapter does not use external dependencies,
+PowerShell modules, `socat`, `nc`, or provider APIs.
 
 ## Profile Path
 
@@ -71,8 +106,17 @@ content. It is idempotent and does not fail when the profile file is missing.
 
 Status reports the PowerShell profile path, whether it exists, and the managed
 block count. Doctor reports profile facts, duplicate blocks, whether `pwsh` or
-`powershell.exe` is available, and whether the future adapter file exists.
-Missing PowerShell or a missing adapter is a warning, not a failure.
+`powershell.exe` is available, and whether the adapter file exists. Missing
+PowerShell is a warning, not a failure.
+
+## Events
+
+The adapter emits `suggestion_accepted` only after it inserts a suggestion.
+Event posting is best-effort and silent on failure.
+
+`command_executed` and `suggestion_ignored` are not implemented in the
+PowerShell MVP. They should be added only when the adapter can capture them
+without false positives.
 
 ## Windows Terminal And WSL
 
@@ -80,9 +124,8 @@ Windows Terminal does not need separate integration; it launches PowerShell,
 which loads the selected profile according to normal PowerShell behavior.
 
 WSL should keep using the Linux shell adapters and Unix socket path. Native
-PowerShell should use the PowerShell profile path and, in a later stage, native
-Windows IPC or HTTP fallback. Crossing the WSL/native Windows boundary is not
-part of this stage.
+PowerShell should use the PowerShell profile path and local HTTP in this MVP.
+Crossing the WSL/native Windows boundary is not part of this stage.
 
 ## Execution Policy
 
@@ -92,15 +135,28 @@ will not alter it automatically.
 
 ## Security
 
-This profile-management stage:
+The PowerShell adapter:
 
 - does not execute suggestions;
-- does not bind keys;
+- inserts only through explicit `Ctrl+F`;
 - does not send terminal scrollback;
 - does not read `.env`;
 - does not enable AI;
 - does not upload data;
-- stays silent when the adapter is missing because the dot-source is guarded.
+- rejects dangerous-risk responses;
+- stays silent when the daemon is unavailable.
 
-The next planned stage is a PowerShell Ctrl+F insert adapter that requests one
-local prediction and inserts it without executing it.
+Administrator mode is detected best-effort through Windows identity APIs or
+`TERM_COPILOT_ROOT_MODE=1`. Admin mode is sent as `root_mode=true`/`admin=true`.
+Admin shells do not auto-discover another user's daemon; use
+`TERM_COPILOT_HTTP_URL` explicitly for Administrator shell testing.
+
+## Manual Verification
+
+```powershell
+$env:TERM_COPILOT_HTTP_URL = "http://127.0.0.1:8765"
+. .\powershell\terminal-copilot.ps1
+```
+
+Then type `docker co`, press `Ctrl+F`, and verify that a matching suggestion is
+inserted without executing. Stop the daemon and verify that `Ctrl+F` is silent.

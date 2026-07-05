@@ -85,16 +85,19 @@ For normal user shells, fish uses the same default socket path as zsh,
 set. In root mode it requires an explicit `TERM_COPILOT_SOCKET` and does not use
 HTTP fallback.
 
-## Install PowerShell Profile Block
+## Install PowerShell MVP
 
 ```bash
 ./venv/bin/python -m daemon.main install --shell powershell
 ```
 
-PowerShell support is staged. This command manages the profile block only; it
-does not install a runtime adapter, bind keys, add Named Pipe IPC, or enable
-ghost text. The block safely checks for the future adapter path before
-dot-sourcing it, so a missing adapter is silent.
+PowerShell support is a lightweight MVP. The profile block dot-sources
+`powershell/terminal-copilot.ps1` when it exists. The adapter binds `Ctrl+F`
+through PSReadLine when available, requests one local HTTP prediction, and
+inserts the returned suffix without executing it.
+
+PowerShell ghost text and Named Pipe IPC are not implemented yet. If PSReadLine
+or the daemon is unavailable, profile load and `Ctrl+F` fail silently.
 
 By default the checked profile target is the current-user current-host
 PowerShell 7 style path:
@@ -221,3 +224,4 @@ Automatic systemd/launchd autostart is intentionally not part of this stage.
   the event, but the adapter avoids fragile false-positive shell logic.
 - Bash remains a fallback adapter and does not provide native ghost text.
 - Fish remains a fallback adapter and does not provide native ghost text.
+- PowerShell remains a fallback adapter and does not provide native ghost text.

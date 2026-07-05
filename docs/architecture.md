@@ -3,7 +3,7 @@
 Runtime path:
 
 ```text
-zsh/bash/fish input
+zsh/bash/fish/PowerShell input
   -> shell integration
   -> local daemon over Unix socket or HTTP fallback
   -> context detector
@@ -30,8 +30,7 @@ The shell integration is not the brain. It only captures the current buffer, cwd
 - `zsh/terminal-copilot.zsh`: zsh autosuggestion strategy.
 - `bash/terminal-copilot.bash`: bash fallback.
 - `fish/terminal-copilot.fish`: fish Ctrl+F fallback.
-- PowerShell support is staged: install/status/doctor can manage a guarded
-  profile block, but the runtime adapter is not implemented yet.
+- `powershell/terminal-copilot.ps1`: PowerShell Ctrl+F fallback.
 
 ## CLI Tooling
 
@@ -103,15 +102,14 @@ event endpoint.
 The zsh adapter uses zsh socket modules for prediction, so the socket hot path
 does not spawn Python. It clears stale suggestion state before each prediction
 request and records accepted/executed events through a silent background event
-helper. Bash and fish remain fallback adapters: they record command execution
-and offer a `Ctrl+F` prediction accept helper, but they do not render native
-zsh-style ghost text.
+helper. Bash, fish and PowerShell remain fallback adapters: they offer explicit
+`Ctrl+F` prediction insertion, but they do not render native zsh-style ghost
+text. Bash and fish record command execution where reliable. PowerShell records
+`suggestion_accepted` after insertion; `command_executed` is deferred until it
+can be captured without false positives.
 
-PowerShell profile management is available as preparation for a future adapter.
-`install --shell powershell` writes a guarded profile block that dot-sources
-`powershell/terminal-copilot.ps1` only if that file exists. Because the adapter
-is not implemented in this stage, the block binds no keys, sends no requests,
-and has no runtime effect.
+The PowerShell MVP uses local HTTP only. Native Windows Named Pipe IPC is
+deferred.
 
 ## Root And Session Context
 

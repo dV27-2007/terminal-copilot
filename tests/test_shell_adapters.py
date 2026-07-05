@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ZSH_PLUGIN = ROOT / "zsh" / "terminal-copilot.zsh"
 BASH_PLUGIN = ROOT / "bash" / "terminal-copilot.bash"
 FISH_PLUGIN = ROOT / "fish" / "terminal-copilot.fish"
+POWERSHELL_PLUGIN = ROOT / "powershell" / "terminal-copilot.ps1"
 
 
 def read_plugin(path: Path) -> str:
@@ -419,6 +420,116 @@ def test_fish_adapter_does_not_auto_execute_suggestions():
     assert "fish_postexec" in text
     assert "suggestion_accepted" in text
     assert "suggestion_ignored" not in text
+
+
+def test_powershell_adapter_file_exists_and_is_quiet():
+    text = read_plugin(POWERSHELL_PLUGIN)
+
+    assert POWERSHELL_PLUGIN.exists()
+    assert "debug" not in text.lower()
+    assert "terminal-copilot PowerShell integration" in text
+    assert "Invoke-TermCopilotSuggestion" in text
+
+
+def test_powershell_adapter_defines_ctrl_f_psreadline_handler():
+    text = read_plugin(POWERSHELL_PLUGIN)
+
+    assert "Set-PSReadLineKeyHandler" in text
+    assert '-Chord "Ctrl+f"' in text
+    assert "-ScriptBlock { Invoke-TermCopilotSuggestion }" in text
+    assert "GetBufferState" in text
+    assert "PSConsoleReadLine]::Insert" in text
+
+
+def test_powershell_adapter_does_not_auto_execute_suggestions():
+    text = read_plugin(POWERSHELL_PLUGIN)
+
+    assert "Invoke-Expression" not in text
+    assert "AcceptLine" not in text
+    assert "Start-Process" not in text
+    assert "Enter" not in text
+    assert "Add-History" not in text
+    assert "PSConsoleReadLine]::Insert" in text
+
+
+def test_powershell_adapter_uses_http_not_named_pipe():
+    text = read_plugin(POWERSHELL_PLUGIN)
+
+    assert "TERM_COPILOT_HTTP_URL" in text
+    assert "http://127.0.0.1:8765" in text
+    assert 'Invoke-TermCopilotJsonPost -Endpoint "/predict"' in text
+    assert "Invoke-RestMethod" in text
+    assert "NamedPipe" not in text
+    assert "\\\\.\\pipe" not in text
+
+
+def test_powershell_adapter_has_admin_and_payload_metadata():
+    text = read_plugin(POWERSHELL_PLUGIN)
+
+    assert "Test-TermCopilotAdmin" in text
+    assert "WindowsPrincipal" in text
+    assert "TERM_COPILOT_ROOT_MODE" in text
+    assert "root_mode = $rootMode" in text
+    assert "admin = $rootMode" in text
+    for field in ("protocol_version = 1", "buffer = $Buffer", "cursor = $Cursor", 'shell = "powershell"', "shell_version", "shell_edition"):
+        assert field in text
+
+
+def test_powershell_adapter_emits_only_accepted_event():
+    text = read_plugin(POWERSHELL_PLUGIN)
+
+    assert "Send-TermCopilotAcceptedEvent" in text
+    assert 'event = "suggestion_accepted"' in text
+    assert 'Invoke-TermCopilotJsonPost -Endpoint "/events"' in text
+    assert "suggestion_ignored" not in text
+    assert "command_executed" not in text
+
+
+def test_powershell_adapter_catches_request_errors():
+    text = read_plugin(POWERSHELL_PLUGIN)
+
+    assert "-ErrorAction Stop" in text
+    assert "catch" in text
+    assert "return $null" in text
+    assert "return" in text
+
+
+def test_powershell_adapter_validates_response_before_insert():
+    text = read_plugin(POWERSHELL_PLUGIN)
+
+    assert "Get-TermCopilotSuggestionSuffix" in text
+    assert '$risk -eq "dangerous"' in text
+    assert "ghost_text" in text
+    assert "full_command" in text
+    assert ".StartsWith($Buffer)" in text
+    assert "Test-TermCopilotCandidateText" in text
+
+
+def test_powershell_install_block_points_to_adapter():
+    from daemon.main import _managed_block
+
+    block = _managed_block("powershell", socket_path="/tmp/unused.sock")
+
+    assert "powershell" in block
+    assert "terminal-copilot.ps1" in block
+    assert "Test-Path -LiteralPath $TermCopilotAdapter" in block
+    assert ". $TermCopilotAdapter" in block
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is not available")
+def test_powershell_adapter_can_be_dot_sourced_when_pwsh_is_available():
+    proc = subprocess.run(
+        ["pwsh", "-NoProfile", "-Command", ". ./powershell/terminal-copilot.ps1"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5.0,
+        check=False,
+    )
+
+    assert proc.returncode == 0
+    assert proc.stderr == ""
 
 
 @pytest.mark.skipif(shutil.which("fish") is None, reason="fish is not available")
